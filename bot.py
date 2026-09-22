@@ -7,25 +7,47 @@ import calendar
 import logging
 import os
 import sqlite3
+import time
 from contextlib import closing
 from datetime import date, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher, F
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
-from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.types import (
+    CallbackQuery,
+    FSInputFile,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from docx import Document
-import time
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = BASE_DIR / "data.sqlite3"
 ACTS_DIR = BASE_DIR / "acts"
-CATEGORIES = {"Главная роль": 1500, "Роль первого плана": 1250, "Роль второго плана": 1000, "Массовка": 750}
+CATEGORIES = {
+    "Главная роль": 1500,
+    "Роль первого плана": 1250,
+    "Роль второго плана": 1000,
+    "Массовка": 750,
+}
+ADMIN_IDS = {
+    int(x)
+    for x in os.getenv("ADMIN_IDS", "853270660").split(",")
+    if x.strip().isdigit()
+}
 
+
+def is_admin(user_id: int) -> bool:
+    return user_id in ADMIN_IDS
+
+
+# ---------- FSM ----------
 
 class AddShow(StatesGroup):
     title = State()
@@ -51,6 +73,12 @@ class ProfileForm(StatesGroup):
 class PriceForm(StatesGroup):
     amount = State()
 
+
+class AdminSetValue(StatesGroup):
+    name = State()
+    contract = State()
+
+# ---------- База данных ----------
 
 class Database:
     def __init__(self, path: Path) -> None:
@@ -88,7 +116,6 @@ class Database:
                     price INTEGER NOT NULL,
                     PRIMARY KEY (user_id, category));
             """)
-            # This keeps databases created by the earlier V2 compatible.
             columns = {row["name"] for row in db.execute("PRAGMA table_info(rehearsals)")}
             if "units" not in columns:
                 db.execute("ALTER TABLE rehearsals ADD COLUMN units INTEGER NOT NULL DEFAULT 1")
@@ -99,7 +126,10 @@ class Database:
 
     def save_profile(self, user_id: int, full_name: str, contract_number: str | None) -> None:
         with closing(self.connect()) as db, db:
-            db.execute("INSERT OR REPLACE INTO users(user_id, full_name, contract_number) VALUES (?, ?, ?)", (user_id, full_name, contract_number))
+            db.execute(
+                "INSERT OR REPLACE INTO users(user_id, full_name, contract_number) VALUES (?, ?, ?)",
+                (user_id, full_name, contract_number),
+            )
 
     def prices(self, user_id: int) -> dict[str, int]:
         result = dict(CATEGORIES)
@@ -110,29 +140,44 @@ class Database:
 
     def save_price(self, user_id: int, category: str, price: int) -> None:
         with closing(self.connect()) as db, db:
-            db.execute("INSERT OR REPLACE INTO user_prices(user_id, category, price) VALUES (?, ?, ?)", (user_id, category, price))
+            db.execute(
+                "INSERT OR REPLACE INTO user_prices(user_id, category, price) VALUES (?, ?, ?)",
+                (user_id, category, price),
+            )
 
     def add_show(self, user_id: int, data: dict[str, str]) -> None:
         price = self.prices(user_id)[data["category"]]
         with closing(self.connect()) as db, db:
-            db.execute("""INSERT INTO shows (user_id, title, role, category, price, day, show_time)
-                VALUES (?, ?, ?, ?, ?, ?, ?)""", (user_id, data["title"], "", data["category"], price, data["day"], data.get("time", "")))
+            db.execute(
+                """INSERT INTO shows (user_id, title, role, category, price, day, show_time)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, data["title"], "", data["category"], price, data["day"], data.get("time", "")),
+            )
 
     def add_rehearsal(self, user_id: int, data: dict[str, str | None]) -> None:
         units = rehearsal_units(data["start"], data["end"])
         with closing(self.connect()) as db, db:
-            db.execute("""INSERT INTO rehearsals (user_id, title, units, day, time_start, time_end)
-                VALUES (?, ?, ?, ?, ?, ?)""", (user_id, data["title"], units, data["day"], data["start"], data["end"]))
+            db.execute(
+                """INSERT INTO rehearsals (user_id, title, units, day, time_start, time_end)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, data["title"], units, data["day"], data["start"], data["end"]),
+            )
 
     def month_rows(self, table: str, user_id: int, month: str) -> list[sqlite3.Row]:
         if table not in {"shows", "rehearsals"}:
             raise ValueError("Unknown table")
         with closing(self.connect()) as db:
-            return db.execute(f"SELECT * FROM {table} WHERE user_id = ? AND day LIKE ? ORDER BY day, id", (user_id, f"{month}-%")).fetchall()
+            return db.execute(
+                f"SELECT * FROM {table} WHERE user_id = ? AND day LIKE ? ORDER BY day, id",
+                (user_id, f"{month}-%"),
+            ).fetchall()
 
     def has_same_show(self, user_id: int, title: str, day: str) -> bool:
         with closing(self.connect()) as db:
-            return db.execute("SELECT 1 FROM shows WHERE user_id = ? AND title = ? AND day = ?", (user_id, title, day)).fetchone() is not None
+            return db.execute(
+                "SELECT 1 FROM shows WHERE user_id = ? AND title = ? AND day = ?",
+                (user_id, title, day),
+            ).fetchone() is not None
 
     def events_for_day(self, day: str) -> list[sqlite3.Row]:
         with closing(self.connect()) as db:
@@ -144,18 +189,75 @@ class Database:
 
     def reminder_was_sent(self, event_type: str, event_id: int, reminder_day: str) -> bool:
         with closing(self.connect()) as db:
-            return db.execute("SELECT 1 FROM reminder_log WHERE event_type = ? AND event_id = ? AND reminder_day = ?", (event_type, event_id, reminder_day)).fetchone() is not None
+            return db.execute(
+                "SELECT 1 FROM reminder_log WHERE event_type = ? AND event_id = ? AND reminder_day = ?",
+                (event_type, event_id, reminder_day),
+            ).fetchone() is not None
 
     def mark_reminder_sent(self, event_type: str, event_id: int, reminder_day: str) -> None:
         with closing(self.connect()) as db, db:
-            db.execute("INSERT OR IGNORE INTO reminder_log(event_type, event_id, reminder_day) VALUES (?, ?, ?)", (event_type, event_id, reminder_day))
+            db.execute(
+                "INSERT OR IGNORE INTO reminder_log(event_type, event_id, reminder_day) VALUES (?, ?, ?)",
+                (event_type, event_id, reminder_day),
+            )
 
     def delete(self, table: str, record_id: int, user_id: int) -> bool:
         if table not in {"shows", "rehearsals"}:
             return False
         with closing(self.connect()) as db, db:
-            return db.execute(f"DELETE FROM {table} WHERE id = ? AND user_id = ?", (record_id, user_id)).rowcount > 0
+            return db.execute(
+                f"DELETE FROM {table} WHERE id = ? AND user_id = ?",
+                (record_id, user_id),
+            ).rowcount > 0
 
+    # ----- админские методы -----
+
+    def list_users(self) -> list[sqlite3.Row]:
+        with closing(self.connect()) as db:
+            return db.execute("""
+                SELECT u.user_id, u.full_name, u.contract_number,
+                       (SELECT COUNT(*) FROM shows s WHERE s.user_id = u.user_id) AS shows_count,
+                       (SELECT COUNT(*) FROM rehearsals r WHERE r.user_id = u.user_id) AS rehearsals_count
+                FROM users u
+                ORDER BY u.user_id
+            """).fetchall()
+
+    def get_user(self, user_id: int) -> sqlite3.Row | None:
+        with closing(self.connect()) as db:
+            return db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
+
+    def delete_user(self, user_id: int) -> bool:
+        with closing(self.connect()) as db, db:
+            db.execute("DELETE FROM reminder_log WHERE event_id IN (SELECT id FROM shows WHERE user_id = ?)", (user_id,))
+            db.execute("DELETE FROM reminder_log WHERE event_id IN (SELECT id FROM rehearsals WHERE user_id = ?)", (user_id,))
+            db.execute("DELETE FROM shows WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM rehearsals WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM user_prices WHERE user_id = ?", (user_id,))
+            cur = db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
+            return cur.rowcount > 0
+
+    def set_user_name(self, user_id: int, full_name: str) -> bool:
+        with closing(self.connect()) as db, db:
+            return db.execute(
+                "UPDATE users SET full_name = ? WHERE user_id = ?",
+                (full_name, user_id),
+            ).rowcount > 0
+
+    def set_user_contract(self, user_id: int, contract: str) -> bool:
+        with closing(self.connect()) as db, db:
+            return db.execute(
+                "UPDATE users SET contract_number = ? WHERE user_id = ?",
+                (contract, user_id),
+            ).rowcount > 0
+
+    def user_stats(self, user_id: int) -> dict[str, int]:
+        with closing(self.connect()) as db:
+            shows = db.execute("SELECT COUNT(*) AS c FROM shows WHERE user_id = ?", (user_id,)).fetchone()["c"]
+            rehearsals = db.execute("SELECT COUNT(*) AS c FROM rehearsals WHERE user_id = ?", (user_id,)).fetchone()["c"]
+        return {"shows": shows, "rehearsals": rehearsals}
+
+
+# ---------- Утилиты ----------
 
 def load_env() -> None:
     file = BASE_DIR / ".env"
@@ -192,13 +294,13 @@ def parse_time(text: str) -> str | None:
 
 
 def rehearsal_units(start: str | None, end: str | None) -> int:
-    """One rehearsal up to 3h inclusive, two over 3h, three over 9h."""
+    """До 3 часов — 1 единица, свыше 3 — 2, свыше 9 — 3."""
     if not start or not end:
         return 1
     start_time = datetime.strptime(start, "%H:%M")
     end_time = datetime.strptime(end, "%H:%M")
     hours = (end_time - start_time).total_seconds() / 3600
-    if hours < 0:  # A rehearsal that crosses midnight.
+    if hours < 0:
         hours += 24
     return 3 if hours > 9 else 2 if hours > 3 else 1
 
@@ -207,14 +309,17 @@ def friendly_day(value: str) -> str:
     return datetime.strptime(value, "%Y-%m-%d").strftime("%d.%m.%Y")
 
 
+# ---------- Клавиатуры ----------
+
 def calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
-    """A compact Russian month calendar; all dates are selected by a button."""
-    names = ("Январь", "Февраль", "Март", "Апрель", "Май", "Июнь", "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь")
+    names = ("Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+             "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь")
     buttons = [[
         InlineKeyboardButton(text="‹", callback_data=f"calnav:{year}:{month}:-1"),
         InlineKeyboardButton(text=f"{names[month - 1]} {year}", callback_data="ignore"),
         InlineKeyboardButton(text="›", callback_data=f"calnav:{year}:{month}:1"),
-    ], [InlineKeyboardButton(text=weekday, callback_data="ignore") for weekday in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")]]
+    ], [InlineKeyboardButton(text=weekday, callback_data="ignore")
+        for weekday in ("Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс")]]
     for week in calendar.monthcalendar(year, month):
         buttons.append([InlineKeyboardButton(
             text=str(day) if day else "·",
@@ -224,14 +329,9 @@ def calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-async def ask_for_day(message: Message, state: FSMContext) -> None:
-    today = date.today()
-    await state.update_data(calendar_flow="show" if await state.get_state() == AddShow.category.state else "rehearsal")
-    await message.answer("Выберите дату в календаре:", reply_markup=calendar_keyboard(today.year, today.month))
-
-
 def hour_keyboard(kind: str) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=f"{hour:02d}", callback_data=f"timehour:{kind}:{hour:02d}") for hour in range(begin, begin + 6)] for begin in range(0, 24, 6)]
+    rows = [[InlineKeyboardButton(text=f"{hour:02d}", callback_data=f"timehour:{kind}:{hour:02d}")
+             for hour in range(begin, begin + 6)] for begin in range(0, 24, 6)]
     if kind != "show":
         rows.append([InlineKeyboardButton(text="Не указывать", callback_data=f"timeskip:{kind}")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="menu")])
@@ -240,15 +340,11 @@ def hour_keyboard(kind: str) -> InlineKeyboardMarkup:
 
 def minute_keyboard(kind: str, hour: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=minute, callback_data=f"timemin:{kind}:{hour}:{minute}") for minute in ("00", "15", "30", "45")],
+        [InlineKeyboardButton(text=minute, callback_data=f"timemin:{kind}:{hour}:{minute}")
+         for minute in ("00", "15", "30", "45")],
         [InlineKeyboardButton(text="← Выбрать другой час", callback_data=f"timeback:{kind}")],
         [InlineKeyboardButton(text="Отмена", callback_data="menu")],
     ])
-
-
-async def ask_for_time(message: Message, kind: str) -> None:
-    label = {"start": "начала репетиции", "end": "окончания репетиции", "show": "начала спектакля"}[kind]
-    await message.answer(f"Выберите час {label}:", reply_markup=hour_keyboard(kind))
 
 
 def main_keyboard() -> InlineKeyboardMarkup:
@@ -264,21 +360,39 @@ def main_keyboard() -> InlineKeyboardMarkup:
 
 def month_keyboard(action: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="Текущий месяц", callback_data=f"{action}:0"), InlineKeyboardButton(text="Прошлый месяц", callback_data=f"{action}:-1")],
+        [InlineKeyboardButton(text="Текущий месяц", callback_data=f"{action}:0"),
+         InlineKeyboardButton(text="Прошлый месяц", callback_data=f"{action}:-1")],
         [InlineKeyboardButton(text="Ввести другой месяц", callback_data=f"{action}:custom")],
         [InlineKeyboardButton(text="← В меню", callback_data="menu")],
     ])
 
 
+# ---------- Хелперы ----------
+
 async def show_menu(message: Message, text: str = "Что хотите сделать?") -> None:
     await message.answer(text, reply_markup=main_keyboard())
 
+
+async def ask_for_day(message: Message, state: FSMContext) -> None:
+    today = date.today()
+    await state.update_data(
+        calendar_flow="show" if await state.get_state() == AddShow.category.state else "rehearsal"
+    )
+    await message.answer("Выберите дату в календаре:", reply_markup=calendar_keyboard(today.year, today.month))
+
+
+async def ask_for_time(message: Message, kind: str) -> None:
+    label = {"start": "начала репетиции", "end": "окончания репетиции", "show": "начала спектакля"}[kind]
+    await message.answer(f"Выберите час {label}:", reply_markup=hour_keyboard(kind))
+
+
+# ---------- Хендлеры: старт / профиль / цены ----------
 
 async def start(message: Message, state: FSMContext, database: Database) -> None:
     await state.clear()
     if not database.profile(message.from_user.id):
         await state.set_state(ProfileForm.full_name)
-        await message.answer("Для первого акта напишите ФИО полностью. Например: Евгений Иосифович Славутин")
+        await message.answer("Для первого акта напишите ФИО полностью. Например: Бафаев Алексей Рахимович")
         return
     await show_menu(message, "Привет! Я помогу вести журнал спектаклей и репетиций.\n\nВыберите действие ниже.")
 
@@ -304,7 +418,10 @@ async def profile_contract(message: Message, state: FSMContext, database: Databa
 async def prices_menu(callback: CallbackQuery, database: Database) -> None:
     await callback.answer()
     prices = database.prices(callback.from_user.id)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{category}: {price} ₽", callback_data=f"price:{index}")] for index, (category, price) in enumerate(prices.items())] + [[InlineKeyboardButton(text="← В меню", callback_data="menu")]])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{category}: {price} ₽", callback_data=f"price:{index}")]
+        for index, (category, price) in enumerate(prices.items())
+    ] + [[InlineKeyboardButton(text="← В меню", callback_data="menu")]])
     await callback.message.answer("Текущие цены. Нажмите категорию, чтобы изменить цену:", reply_markup=keyboard)
 
 
@@ -319,7 +436,8 @@ async def price_pick(callback: CallbackQuery, state: FSMContext) -> None:
 async def price_save(message: Message, state: FSMContext, database: Database) -> None:
     try:
         amount = int(message.text.strip())
-        if amount <= 0: raise ValueError
+        if amount <= 0:
+            raise ValueError
     except ValueError:
         await message.answer("Введите положительное целое число, например 1250.")
         return
@@ -328,6 +446,8 @@ async def price_save(message: Message, state: FSMContext, database: Database) ->
     await state.clear()
     await show_menu(message, "✅ Цена сохранена.")
 
+
+# ---------- Хендлеры: меню / помощь / отмена ----------
 
 async def cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -342,8 +462,16 @@ async def button_menu(callback: CallbackQuery, state: FSMContext) -> None:
 
 async def help_handler(callback: CallbackQuery) -> None:
     await callback.answer()
-    await callback.message.answer("• Добавляйте спектакли и репетиции по шагам.\n• «Мой месяц» показывает записи и позволяет удалить ошибочную.\n• «Скачать акт» создаёт Word-файл.\n\nВ любой момент отправьте /cancel, чтобы отменить ввод.", reply_markup=main_keyboard())
+    await callback.message.answer(
+        "• Добавляйте спектакли и репетиции по шагам.\n"
+        "• «Мой месяц» показывает записи и позволяет удалить ошибочную.\n"
+        "• «Скачать акт» создаёт Word-файл.\n\n"
+        "В любой момент отправьте /cancel, чтобы отменить ввод.",
+        reply_markup=main_keyboard(),
+    )
 
+
+# ---------- Хендлеры: добавить спектакль ----------
 
 async def add_show(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
@@ -358,7 +486,10 @@ async def save_show_title(message: Message, state: FSMContext) -> None:
         return
     await state.update_data(title=text)
     await state.set_state(AddShow.category)
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{name} — {price} ₽", callback_data=f"category:{index}")] for index, (name, price) in enumerate(CATEGORIES.items())])
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"{name} — {price} ₽", callback_data=f"category:{index}")]
+        for index, (name, price) in enumerate(CATEGORIES.items())
+    ])
     await message.answer("Выберите категорию — цена подставится сама:", reply_markup=keyboard)
 
 
@@ -379,14 +510,22 @@ async def save_show_time(message: Message, state: FSMContext, database: Database
     data = await state.get_data()
     database.add_show(message.from_user.id, data)
     await state.clear()
-    await show_menu(message, f"✅ Сохранил: {data['title']}, {friendly_day(data['day'])} в {show_time}. Цена — {database.prices(message.from_user.id)[data['category']]} ₽.")
+    await show_menu(
+        message,
+        f"✅ Сохранил: {data['title']}, {friendly_day(data['day'])} в {show_time}. "
+        f"Цена — {database.prices(message.from_user.id)[data['category']]} ₽.",
+    )
 
+
+# ---------- Хендлеры: календарь и время ----------
 
 async def calendar_navigate(callback: CallbackQuery) -> None:
     _, year, month, step = callback.data.split(":")
     number = int(year) * 12 + int(month) - 1 + int(step)
     await callback.answer()
-    await callback.message.edit_reply_markup(reply_markup=calendar_keyboard(number // 12, number % 12 + 1))
+    await callback.message.edit_reply_markup(
+        reply_markup=calendar_keyboard(number // 12, number % 12 + 1)
+    )
 
 
 async def calendar_day(callback: CallbackQuery, state: FSMContext, database: Database) -> None:
@@ -404,34 +543,16 @@ async def calendar_day(callback: CallbackQuery, state: FSMContext, database: Dat
         data = await state.get_data()
         database.add_show(callback.from_user.id, data)
         await state.clear()
-        await show_menu(callback.message, f"✅ Сохранил: {data['title']}, {friendly_day(chosen_day)}. Цена — {database.prices(callback.from_user.id)[data['category']]} ₽.")
+        await show_menu(
+            callback.message,
+            f"✅ Сохранил: {data['title']}, {friendly_day(chosen_day)}. "
+            f"Цена — {database.prices(callback.from_user.id)[data['category']]} ₽.",
+        )
         return
     if flow == "rehearsal":
         await state.update_data(day=chosen_day)
         await state.set_state(AddRehearsal.start)
         await ask_for_time(callback.message, "start")
-
-
-async def add_rehearsal(callback: CallbackQuery, state: FSMContext) -> None:
-    await callback.answer()
-    await state.set_state(AddRehearsal.title)
-    await callback.message.answer("Введите название репетиции:")
-
-
-async def save_rehearsal_title(message: Message, state: FSMContext) -> None:
-    if not message.text.strip():
-        await message.answer("Название не должно быть пустым.")
-        return
-    await state.update_data(title=message.text.strip())
-    await ask_for_day(message, state)
-
-
-async def save_rehearsal(message: Message, state: FSMContext, database: Database, telegram_user_id: int) -> None:
-    data = await state.get_data()
-    database.add_rehearsal(telegram_user_id, data)
-    units = rehearsal_units(data.get("start"), data.get("end"))
-    await state.clear()
-    await show_menu(message, f"✅ Репетиция «{data['title']}» на {friendly_day(data['day'])} сохранена. Засчитано: {units}. Цена — {units * 750} ₽.")
 
 
 async def time_hour(callback: CallbackQuery) -> None:
@@ -459,7 +580,11 @@ async def time_minute(callback: CallbackQuery, state: FSMContext, database: Data
         data = await state.get_data()
         database.add_show(callback.from_user.id, data)
         await state.clear()
-        await show_menu(callback.message, f"✅ Сохранил второй показ: {data['title']}, {friendly_day(data['day'])} в {value}. Цена — {database.prices(callback.from_user.id)[data['category']]} ₽.")
+        await show_menu(
+            callback.message,
+            f"✅ Сохранил второй показ: {data['title']}, {friendly_day(data['day'])} в {value}. "
+            f"Цена — {database.prices(callback.from_user.id)[data['category']]} ₽.",
+        )
         return
     await save_rehearsal(callback.message, state, database, callback.from_user.id)
 
@@ -474,6 +599,41 @@ async def time_skip(callback: CallbackQuery, state: FSMContext, database: Databa
     await state.update_data(end=None)
     await save_rehearsal(callback.message, state, database, callback.from_user.id)
 
+
+# ---------- Хендлеры: репетиции ----------
+
+async def add_rehearsal(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.set_state(AddRehearsal.title)
+    await callback.message.answer("Введите название репетиции:")
+
+
+async def save_rehearsal_title(message: Message, state: FSMContext) -> None:
+    if not message.text.strip():
+        await message.answer("Название не должно быть пустым.")
+        return
+    await state.update_data(title=message.text.strip())
+    await ask_for_day(message, state)
+
+
+async def save_rehearsal(
+    message: Message,
+    state: FSMContext,
+    database: Database,
+    telegram_user_id: int,
+) -> None:
+    data = await state.get_data()
+    database.add_rehearsal(telegram_user_id, data)
+    units = rehearsal_units(data.get("start"), data.get("end"))
+    await state.clear()
+    await show_menu(
+        message,
+        f"✅ Репетиция «{data['title']}» на {friendly_day(data['day'])} сохранена. "
+        f"Засчитано: {units}. Цена — {units * 750} ₽.",
+    )
+
+
+# ---------- Хендлеры: месяц ----------
 
 async def month_menu(callback: CallbackQuery) -> None:
     await callback.answer()
@@ -492,7 +652,8 @@ async def view_month(callback: CallbackQuery, state: FSMContext, database: Datab
 
 
 async def send_month(message: Message, user_id: int, month: str, database: Database) -> None:
-    shows, rehearsals = database.month_rows("shows", user_id, month), database.month_rows("rehearsals", user_id, month)
+    shows = database.month_rows("shows", user_id, month)
+    rehearsals = database.month_rows("rehearsals", user_id, month)
     rehearsal_units_total = sum(row["units"] for row in rehearsals)
     total = sum(row["price"] or 0 for row in shows) + rehearsal_units_total * 750
     text = [f"📅 {month}"]
@@ -500,16 +661,20 @@ async def send_month(message: Message, user_id: int, month: str, database: Datab
     if shows:
         text.append("\nСпектакли:")
         for row in shows:
-            time_text = f", {row['show_time']}" if row['show_time'] else ""
+            time_text = f", {row['show_time']}" if row["show_time"] else ""
             text.append(f"• {friendly_day(row['day'])}{time_text} — {row['title']} — {row['price'] or 'цена не указана'} ₽")
-            keyboard_rows.append([InlineKeyboardButton(text=f"Удалить спектакль: {row['title']}", callback_data=f"delete:shows:{row['id']}")])
+            keyboard_rows.append([
+                InlineKeyboardButton(text=f"Удалить спектакль: {row['title']}", callback_data=f"delete:shows:{row['id']}")
+            ])
     if rehearsals:
         text.append("\nРепетиции:")
         for row in rehearsals:
             clock = "" if not row["time_start"] else f" ({row['time_start']}–{row['time_end'] or '?'})"
             units = row["units"]
             text.append(f"• {friendly_day(row['day'])} — {row['title']}{clock} — {units} × 750 = {units * 750} ₽")
-            keyboard_rows.append([InlineKeyboardButton(text=f"Удалить репетицию: {row['title']}", callback_data=f"delete:rehearsals:{row['id']}")])
+            keyboard_rows.append([
+                InlineKeyboardButton(text=f"Удалить репетицию: {row['title']}", callback_data=f"delete:rehearsals:{row['id']}")
+            ])
     if not shows and not rehearsals:
         text.append("\nПока пусто. Добавьте первую запись.")
     else:
@@ -532,6 +697,8 @@ async def custom_month(message: Message, state: FSMContext, database: Database) 
         await send_act(message, message.from_user.id, month, database)
 
 
+# ---------- Числа прописью ----------
+
 def _plural_ru(n: int, one: str, few: str, many: str) -> str:
     n = abs(n) % 100
     if 11 <= n <= 19:
@@ -551,6 +718,8 @@ _TENS = ["", "", "двадцать", "тридцать", "сорок", "пять
          "семьдесят", "восемьдесят", "девяносто"]
 _HUNDREDS = ["", "сто", "двести", "триста", "четыреста", "пятьсот",
              "шестьсот", "семьсот", "восемьсот", "девятьсот"]
+_MONTHS_GEN = {1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
+               7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"}
 
 
 def _female(word: str) -> str:
@@ -604,28 +773,22 @@ def _rubles_in_words(amount: float) -> str:
             f"{kop:02d} {_plural_ru(kop, 'копейка', 'копейки', 'копеек')}")
 
 
-_MONTHS_GEN = {1: "января", 2: "февраля", 3: "марта", 4: "апреля", 5: "мая", 6: "июня",
-               7: "июля", 8: "августа", 9: "сентября", 10: "октября", 11: "ноября", 12: "декабря"}
-
+# ---------- Генерация акта ----------
 
 def make_act(user_id: int, month: str, database: Database) -> Path:
-    """Word-акт 1:1 по act_template.docx."""
-    from docx import Document
+    """Word-акт по образцу act_template.docx."""
     from docx.shared import Pt, Cm, Mm
     from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
     from docx.enum.table import WD_ALIGN_VERTICAL
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
-    # ---------- данные ----------
     shows = database.month_rows("shows", user_id, month)
     rehearsals = database.month_rows("rehearsals", user_id, month)
     profile = database.profile(user_id)
-    full_name = (profile["full_name"] if profile and profile["full_name"]
-                 else "ВВЕДИТЕ ИМЯ")
+    full_name = (profile["full_name"] if profile and profile["full_name"] else "ВВЕДИТЕ ИМЯ")
     contract_number = (profile["contract_number"] if profile else None) or ""
 
-    # ФИО для подписи: "А.Р. Бафаев" — БЕЗ пробелов между инициалами
     parts = full_name.split()
     if len(parts) >= 2:
         surname = parts[0]
@@ -642,7 +805,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     period_text = (f"с 1 {_MONTHS_GEN[mon]} {year} г. "
                    f"по {last_day_num} {_MONTHS_GEN[mon]} {year} г.")
 
-    # ---------- группировка показов ----------
     grouped: dict[str, dict] = {}
     for row in shows:
         key = row["title"]
@@ -654,12 +816,11 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         })
         grouped[key]["days"].append(row["day"])
 
-    # ---------- документ ----------
     doc = Document()
 
     style = doc.styles["Normal"]
     style.font.name = "Times New Roman"
-    style.font.size = Pt(8)
+    style.font.size = Pt(11)
     rpr = style.element.get_or_add_rPr()
     rfonts = rpr.find(qn("w:rFonts")) or OxmlElement("w:rFonts")
     if rfonts.getparent() is None:
@@ -694,23 +855,21 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
                 r.font.size = Pt(size)
         return p
 
-    # ---------- Шапка ----------
     _p("АКТ", align=WD_ALIGN_PARAGRAPH.CENTER, bold=True,
-       indent=Cm(0), size=8, space_after=2)
+       indent=Cm(0), size=14, space_after=2)
     _p("сдачи-приемки оказанных услуг", align=WD_ALIGN_PARAGRAPH.CENTER,
-       bold=True, indent=Cm(0), size=8, space_after=0)
+       bold=True, indent=Cm(0), size=12, space_after=0)
 
     date_p = doc.add_paragraph()
     date_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     date_p.paragraph_format.first_line_indent = Cm(0)
-    date_p.paragraph_format.space_before = Pt(8)
-    date_p.paragraph_format.space_after = Pt(8)
+    date_p.paragraph_format.space_before = Pt(14)
+    date_p.paragraph_format.space_after = Pt(14)
     date_p.paragraph_format.tab_stops.add_tab_stop(Cm(16.5))
     date_p.add_run("г. Москва\t"
                    f"«{end_day.day:02d}» {_MONTHS_GEN[end_day.month]} "
                    f"{end_day.year} г.")
 
-    # ---------- Преамбула (одна скобка!) ----------
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     p.paragraph_format.first_line_indent = Cm(1.25)
@@ -722,7 +881,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         "(ГБУК г. Москвы «Театр им. Моссовета»)"
     )
     r.bold = True
-    # закрывающая скобка — в продолжении, БЕЗ лишней
     p.add_run(
         ", именуемое в дальнейшем «Заказчик», в лице директора "
         "Черепнева Алексея Анатольевича, действующего на основании Устава, "
@@ -736,7 +894,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         "о нижеследующем:"
     )
 
-    # ---------- Договор ----------
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     p.paragraph_format.first_line_indent = Cm(1.25)
@@ -745,7 +902,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
 
     if contract_number:
         cnum = contract_number.rstrip()
-        # гарантируем точку перед скобкой
         if not cnum.endswith("."):
             cnum += "."
         p.add_run(
@@ -765,7 +921,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     _p(f"За период {period_text} фактически оказаны услуги "
        f"в следующем объеме:", space_after=6)
 
-    # ---------- Таблица ----------
     headers = ("№ п/п", "Наименование услуг", "Наименование спектакля",
                "Артистическая роль/ Вокал", "Цена за единицу, руб.",
                "Кол-во услуг", "Стоимость, руб.")
@@ -775,7 +930,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     table.autofit = False
     table.allow_autofit = False
 
-    # жёстко фиксируем layout
     tblPr = table._tbl.tblPr
     layout = OxmlElement("w:tblLayout")
     layout.set(qn("w:type"), "fixed")
@@ -804,19 +958,16 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         for cell, w in zip(row.cells, widths):
             cell.width = w
 
-    # шапка таблицы
     for cell, text in zip(table.rows[0].cells, headers):
         _set_cell(cell, text, align=WD_ALIGN_PARAGRAPH.CENTER, bold=True)
     _apply_widths(table.rows[0])
 
-    # формат денег с ЗАПЯТОЙ
     def money(v: float) -> str:
         return f"{v:,.2f}".replace(",", "\u00A0").replace(".", ",")
 
     row_number = 0
     total = 0.0
 
-    # Показы — по одной строке на название
     for group in grouped.values():
         row_number += 1
         count = len(group["days"])
@@ -837,11 +988,9 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         row = table.add_row()
         _apply_widths(row)
         for i, (cell, value) in enumerate(zip(row.cells, values)):
-            align = WD_ALIGN_PARAGRAPH.CENTER if i in (0, 4, 5, 6) \
-                else WD_ALIGN_PARAGRAPH.LEFT
+            align = WD_ALIGN_PARAGRAPH.CENTER if i in (0, 4, 5, 6) else WD_ALIGN_PARAGRAPH.LEFT
             _set_cell(cell, value, align=align)
 
-    # Репетиции — одной строкой
     if rehearsals:
         row_number += 1
         units = sum(r["units"] for r in rehearsals)
@@ -862,25 +1011,20 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         row = table.add_row()
         _apply_widths(row)
         for i, (cell, value) in enumerate(zip(row.cells, values)):
-            align = WD_ALIGN_PARAGRAPH.CENTER if i in (0, 4, 5, 6) \
-                else WD_ALIGN_PARAGRAPH.LEFT
+            align = WD_ALIGN_PARAGRAPH.CENTER if i in (0, 4, 5, 6) else WD_ALIGN_PARAGRAPH.LEFT
             _set_cell(cell, value, align=align)
 
-    # Итого
     total_row = table.add_row()
     _apply_widths(total_row)
     merged = total_row.cells[0].merge(total_row.cells[5])
     _set_cell(merged, "ВСЕГО", align=WD_ALIGN_PARAGRAPH.CENTER, bold=True)
-    _set_cell(total_row.cells[6], money(total),
-              align=WD_ALIGN_PARAGRAPH.CENTER, bold=True)
+    _set_cell(total_row.cells[6], money(total), align=WD_ALIGN_PARAGRAPH.CENTER, bold=True)
 
-    # повтор шапки на новых страницах
     tr_pr = table.rows[0]._tr.get_or_add_trPr()
     tbl_header = OxmlElement("w:tblHeader")
     tbl_header.set(qn("w:val"), "true")
     tr_pr.append(tbl_header)
 
-    # ---------- Пост-табличная часть ----------
     _p("", indent=Cm(0), space_after=6)
     _p("Обязательства по договору выполнены Исполнителем в установленные "
        "сроки. Заказчик не имеет претензий к объему и качеству оказанных "
@@ -906,7 +1050,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
        "юридическую силу, по одному экземпляру для каждой из Сторон и "
        "является неотъемлемой частью Договора.", space_after=6)
 
-    # ---------- Подписи ----------
     _p("", indent=Cm(0), space_after=12)
 
     sign = doc.add_table(rows=1, cols=2)
@@ -933,7 +1076,7 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
             if text:
                 r = p.add_run(text)
                 r.font.name = "Times New Roman"
-                r.font.size = Pt(8)
+                r.font.size = Pt(11)
                 r.bold = bold
 
     _fill_sign(left, [
@@ -955,7 +1098,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         (f"«____» ______________ {end_day.year} г.", False),
     ])
 
-    # убираем границы таблицы подписей
     tbl_pr = sign._tbl.tblPr
     borders = OxmlElement("w:tblBorders")
     for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
@@ -971,9 +1113,16 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     doc.save(path)
     return path
 
+
+# ---------- Хендлеры: акт ----------
+
 async def send_act(message: Message, user_id: int, month: str, database: Database) -> None:
     path = make_act(user_id, month, database)
-    await message.answer_document(FSInputFile(path), caption=f"Готово. Акт за {month}.", reply_markup=main_keyboard())
+    await message.answer_document(
+        FSInputFile(path),
+        caption=f"Готово. Акт за {month}.",
+        reply_markup=main_keyboard(),
+    )
 
 
 async def act_current(callback: CallbackQuery, database: Database) -> None:
@@ -986,15 +1135,259 @@ async def delete_record(callback: CallbackQuery, database: Database) -> None:
     deleted = database.delete(table, int(record), callback.from_user.id)
     await callback.answer("Запись удалена" if deleted else "Запись уже удалена")
     if deleted:
-        await callback.message.answer("✅ Удалил запись. Нажмите «Мой месяц», чтобы увидеть обновлённый список.", reply_markup=main_keyboard())
+        await callback.message.answer(
+            "✅ Удалил запись. Нажмите «Мой месяц», чтобы увидеть обновлённый список.",
+            reply_markup=main_keyboard(),
+        )
 
 
 async def ignore_callback(callback: CallbackQuery) -> None:
     await callback.answer()
 
 
+# ---------- Админка ----------
+
+async def admin_menu(message: Message) -> None:
+    if not is_admin(message.from_user.id):
+        await message.answer("Нет доступа.")
+        return
+    text = (
+        "🛠 <b>Админка</b>\n\n"
+        "Команды:\n"
+        "/users — список всех пользователей\n"
+        "/user &lt;id&gt; — подробно про пользователя\n"
+        "/del_user &lt;id&gt; — удалить пользователя и все его данные\n"
+        "/set_name &lt;id&gt; &lt;ФИО&gt; — изменить ФИО\n"
+        "/set_contract &lt;id&gt; &lt;номер&gt; — изменить номер договора\n"
+    )
+    await message.answer(text, parse_mode="HTML")
+
+
+async def admin_users(message: Message, database: Database) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    users = database.list_users()
+    if not users:
+        await message.answer("Пользователей в базе нет.")
+        return
+
+    # Один заголовок
+    await message.answer("👥 <b>Пользователи:</b>", parse_mode="HTML")
+
+    # По карточке на пользователя
+    for u in users:
+        contract = u["contract_number"] or "—"
+        text = (
+            f"👤 <b>{u['full_name']}</b>\n"
+            f"ID: <code>{u['user_id']}</code>\n"
+            f"Договор: {contract}\n"
+            f"Показов: {u['shows_count']}, репетиций: {u['rehearsals_count']}"
+        )
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [
+                InlineKeyboardButton(text="✏️ ФИО", callback_data=f"adm:name:{u['user_id']}"),
+                InlineKeyboardButton(text="📝 Договор", callback_data=f"adm:contract:{u['user_id']}"),
+            ],
+            [
+                InlineKeyboardButton(text="📊 Подробнее", callback_data=f"adm:info:{u['user_id']}"),
+                InlineKeyboardButton(text="🗑 Удалить", callback_data=f"adm:del:{u['user_id']}"),
+            ],
+        ])
+        await message.answer(text, parse_mode="HTML", reply_markup=keyboard)
+
+
+async def admin_user(message: Message, database: Database) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        await message.answer("Формат: /user &lt;id&gt;")
+        return
+    uid = int(parts[1].strip())
+    user = database.get_user(uid)
+    if not user:
+        await message.answer(f"Пользователь {uid} не найден.")
+        return
+    contract = user["contract_number"] or "—"
+    stats = database.user_stats(uid)
+    await message.answer(
+        f"👤 <b>{user['full_name']}</b>\n"
+        f"ID: <code>{uid}</code>\n"
+        f"Договор: {contract}\n"
+        f"Показов: {stats['shows']}\n"
+        f"Репетиций: {stats['rehearsals']}",
+        parse_mode="HTML",
+    )
+
+
+async def admin_del_user(message: Message, database: Database) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        await message.answer("Формат: /del_user &lt;id&gt;")
+        return
+    uid = int(parts[1].strip())
+    if database.delete_user(uid):
+        await message.answer(f"✅ Пользователь {uid} и все его данные удалены.")
+    else:
+        await message.answer(f"Пользователь {uid} не найден.")
+
+
+async def admin_set_name(message: Message, database: Database) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3 or not parts[1].strip().isdigit():
+        await message.answer("Формат: /set_name &lt;id&gt; &lt;ФИО&gt;")
+        return
+    uid = int(parts[1].strip())
+    new_name = parts[2].strip()
+    if database.set_user_name(uid, new_name):
+        await message.answer(f"✅ ФИО пользователя {uid} изменено на «{new_name}».")
+    else:
+        await message.answer(f"Пользователь {uid} не найден.")
+
+
+async def admin_set_contract(message: Message, database: Database) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3 or not parts[1].strip().isdigit():
+        await message.answer("Формат: /set_contract &lt;id&gt; &lt;номер&gt;")
+        return
+    uid = int(parts[1].strip())
+    new_contract = parts[2].strip()
+    if database.set_user_contract(uid, new_contract):
+        await message.answer(f"✅ Договор пользователя {uid} изменён на «{new_contract}».")
+    else:
+        await message.answer(f"Пользователь {uid} не найден.")
+
+async def admin_cb_name(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    uid = int(callback.data.split(":")[2])
+    await callback.answer()
+    await state.update_data(admin_target_uid=uid)
+    await state.set_state(AdminSetValue.name)
+    await callback.message.answer(
+        f"Введите новое ФИО для пользователя <code>{uid}</code>:",
+        parse_mode="HTML",
+    )
+
+
+async def admin_cb_contract(callback: CallbackQuery, state: FSMContext) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    uid = int(callback.data.split(":")[2])
+    await callback.answer()
+    await state.update_data(admin_target_uid=uid)
+    await state.set_state(AdminSetValue.contract)
+    await callback.message.answer(
+        f"Введите новый номер договора для пользователя <code>{uid}</code>:\n"
+        f"Если нужно очистить — отправьте минус: -",
+        parse_mode="HTML",
+    )
+
+
+async def admin_cb_info(callback: CallbackQuery, database: Database) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    uid = int(callback.data.split(":")[2])
+    await callback.answer()
+    user = database.get_user(uid)
+    if not user:
+        await callback.message.answer(f"Пользователь {uid} не найден.")
+        return
+    stats = database.user_stats(uid)
+    contract = user["contract_number"] or "—"
+    await callback.message.answer(
+        f"👤 <b>{user['full_name']}</b>\n"
+        f"ID: <code>{uid}</code>\n"
+        f"Договор: {contract}\n"
+        f"Показов: {stats['shows']}\n"
+        f"Репетиций: {stats['rehearsals']}",
+        parse_mode="HTML",
+    )
+
+
+async def admin_cb_delete(callback: CallbackQuery, database: Database) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    uid = int(callback.data.split(":")[2])
+    await callback.answer()
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"adm:confirm_del:{uid}"),
+        InlineKeyboardButton(text="← Отмена", callback_data="adm:cancel"),
+    ]])
+    await callback.message.answer(
+        f"⚠️ Удалить пользователя <code>{uid}</code> со всеми данными?",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+async def admin_cb_confirm_delete(callback: CallbackQuery, database: Database) -> None:
+    if not is_admin(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    uid = int(callback.data.split(":")[2])
+    if database.delete_user(uid):
+        await callback.answer("Удалено", show_alert=True)
+        await callback.message.edit_text(f"✅ Пользователь <code>{uid}</code> удалён.", parse_mode="HTML")
+    else:
+        await callback.answer("Не найден", show_alert=True)
+        await callback.message.edit_text(f"Пользователь <code>{uid}</code> не найден.", parse_mode="HTML")
+
+
+async def admin_cb_cancel(callback: CallbackQuery) -> None:
+    await callback.answer()
+    await callback.message.edit_text("Отменено.")
+
+
+async def admin_input_name(message: Message, state: FSMContext, database: Database) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    uid = data.get("admin_target_uid")
+    new_name = message.text.strip()
+    if len(new_name.split()) < 2:
+        await message.answer("Нужно как минимум имя и фамилия. Попробуйте ещё раз.")
+        return
+    if database.set_user_name(uid, new_name):
+        await state.clear()
+        await message.answer(f"✅ ФИО пользователя <code>{uid}</code> изменено на «{new_name}».", parse_mode="HTML")
+    else:
+        await state.clear()
+        await message.answer(f"Пользователь <code>{uid}</code> не найден.", parse_mode="HTML")
+
+
+async def admin_input_contract(message: Message, state: FSMContext, database: Database) -> None:
+    if not is_admin(message.from_user.id):
+        return
+    data = await state.get_data()
+    uid = data.get("admin_target_uid")
+    text = message.text.strip()
+    new_contract = None if text == "-" else text
+    if database.set_user_contract(uid, new_contract):
+        await state.clear()
+        await message.answer(
+            f"✅ Договор пользователя <code>{uid}</code> "
+            f"{'очищен' if new_contract is None else f'изменён на «{new_contract}»'}.",
+            parse_mode="HTML",
+        )
+    else:
+        await state.clear()
+        await message.answer(f"Пользователь <code>{uid}</code> не найден.", parse_mode="HTML")
+
+
+# ---------- Фоновые задачи ----------
+
 async def reminder_loop(bot: Bot, database: Database) -> None:
-    """Notify once at 10:00 Moscow time on the calendar day before an event."""
     timezone = ZoneInfo("Europe/Moscow")
     while True:
         now = datetime.now(timezone)
@@ -1006,12 +1399,16 @@ async def reminder_loop(bot: Bot, database: Database) -> None:
                 event_name = "спектакль" if event["type"] == "show" else "репетиция"
                 time_text = f" в {event['time']}" if event["time"] else ""
                 try:
-                    await bot.send_message(event["user_id"], f"🔔 Напоминание: завтра{time_text} {event_name} «{event['title']}».")
+                    await bot.send_message(
+                        event["user_id"],
+                        f"🔔 Напоминание: завтра{time_text} {event_name} «{event['title']}».",
+                    )
                 except Exception:
                     logging.exception("Could not send reminder to user %s", event["user_id"])
                 else:
                     database.mark_reminder_sent(event["type"], event["id"], now.date().isoformat())
         await asyncio.sleep(600)
+
 
 async def cleanup_acts_loop() -> None:
     """Раз в час удаляем акты старше 24 часов."""
@@ -1032,14 +1429,29 @@ async def unknown(message: Message) -> None:
     await show_menu(message, "Я жду нажатия на кнопку. Если вы были в процессе ввода, используйте /cancel.")
 
 
+# ---------- Роутер ----------
+
 def dispatcher(database: Database) -> Dispatcher:
     dp = Dispatcher()
     dp["database"] = database
+
+    # админ-команды — первыми, чтобы не перехватили FSM
+    dp.message.register(admin_menu, Command("admin"))
+    dp.message.register(admin_users, Command("users"))
+    dp.message.register(admin_user, Command("user"))
+    dp.message.register(admin_del_user, Command("del_user"))
+    dp.message.register(admin_set_name, Command("set_name"))
+    dp.message.register(admin_set_contract, Command("set_contract"))
+    dp.message.register(admin_input_name, AdminSetValue.name, F.text)
+    dp.message.register(admin_input_contract, AdminSetValue.contract, F.text)
+
+
     dp.message.register(cancel, Command("cancel"))
     dp.message.register(start, CommandStart())
     dp.message.register(profile_name, ProfileForm.full_name, F.text)
     dp.message.register(profile_contract, ProfileForm.contract_number, F.text)
     dp.message.register(price_save, PriceForm.amount, F.text)
+
     dp.callback_query.register(button_menu, F.data == "menu")
     dp.callback_query.register(help_handler, F.data == "help")
     dp.callback_query.register(prices_menu, F.data == "prices")
@@ -1058,25 +1470,43 @@ def dispatcher(database: Database) -> Dispatcher:
     dp.callback_query.register(time_skip, F.data.startswith("timeskip:"))
     dp.callback_query.register(delete_record, F.data.startswith("delete:"))
     dp.callback_query.register(ignore_callback, F.data == "ignore")
+    dp.callback_query.register(admin_cb_name, F.data.startswith("adm:name:"))
+    dp.callback_query.register(admin_cb_contract, F.data.startswith("adm:contract:"))
+    dp.callback_query.register(admin_cb_info, F.data.startswith("adm:info:"))
+    dp.callback_query.register(admin_cb_delete, F.data.startswith("adm:del:"))
+    dp.callback_query.register(admin_cb_confirm_delete, F.data.startswith("adm:confirm_del:"))
+    dp.callback_query.register(admin_cb_cancel, F.data == "adm:cancel")
+
     dp.message.register(save_show_title, AddShow.title, F.text)
     dp.message.register(save_show_time, AddShow.time, F.text)
     dp.message.register(save_rehearsal_title, AddRehearsal.title, F.text)
     dp.message.register(custom_month, PickMonth.month, F.text)
     dp.message.register(unknown, F.text)
+
+
+
     return dp
 
+
+# ---------- main ----------
 
 async def main() -> None:
     load_env()
     token = os.getenv("BOT_TOKEN")
-    asyncio.create_task(reminder_loop(bot, database))
-    asyncio.create_task(cleanup_acts_loop())
     if not token or token.startswith("вставьте"):
         raise RuntimeError("Создайте файл .env по образцу .env.example и вставьте токен BotFather.")
+    proxy_url = os.getenv("PROXY_URL") or None
     database = Database(DB_FILE)
     database.initialize()
-    bot = Bot(token, session=AiohttpSession(proxy="http://root:nLjY04zbDr@5.10.218.56:3128"))    asyncio.create_task(reminder_loop(bot, database))
-    await dispatcher(database).start_polling(bot)
+    if proxy_url:
+        logging.info("Использую прокси: %s", proxy_url)
+        bot = Bot(token, session=AiohttpSession(proxy=proxy_url))
+    else:
+        logging.info("Прокси не задан — подключаюсь напрямую")
+        bot = Bot(token)
+    asyncio.create_task(reminder_loop(bot, database))
+    asyncio.create_task(cleanup_acts_loop())
+    await dispatcher(database).start_polling(bot, drop_pending_updates=True)
 
 
 if __name__ == "__main__":
