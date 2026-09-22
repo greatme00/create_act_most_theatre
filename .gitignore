@@ -1,0 +1,23 @@
+ Секреты
+.env
+
+# Виртуальное окружение
+venv/
+.venv/
+__pycache__/
+*.pyc
+
+# База данных
+data.sqlite3
+
+# Сгенерированные акты
+acts/
+
+# Файлы ОС
+.DS_Store
+Thumbs.db
+
+# Логи
+*.log
+
+gpt_version.py
