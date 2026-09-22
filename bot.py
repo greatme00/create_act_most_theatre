@@ -17,6 +17,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, FSInputFile, InlineKeyboardButton, InlineKeyboardMarkup, Message
+from aiogram.client.session.aiohttp import AiohttpSession
 from docx import Document
 import time
 
@@ -1074,8 +1075,7 @@ async def main() -> None:
         raise RuntimeError("Создайте файл .env по образцу .env.example и вставьте токен BotFather.")
     database = Database(DB_FILE)
     database.initialize()
-    bot = Bot(token)
-    asyncio.create_task(reminder_loop(bot, database))
+    bot = Bot(token, session=AiohttpSession(proxy="http://root:nLjY04zbDr@5.10.218.56:3128"))    asyncio.create_task(reminder_loop(bot, database))
     await dispatcher(database).start_polling(bot)
 
 
