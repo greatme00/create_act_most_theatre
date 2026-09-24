@@ -589,25 +589,15 @@ async def calendar_day(callback: CallbackQuery, state: FSMContext, database: Dat
     await callback.answer()
     if flow == "show":
         await state.update_data(day=chosen_day)
-        if database.has_same_show(callback.from_user.id, data["title"], chosen_day):
-            await state.set_state(AddShow.time)
-            await callback.message.answer("В этот день такой спектакль уже есть. Выберите время второго показа.")
-            await ask_for_time(callback.message, "show")
-            return
-        data = await state.get_data()
-        database.add_show(callback.from_user.id, data)
-        await state.clear()
-        await show_menu(
-            callback.message,
-            f"✅ Сохранил: {data['title']}, {friendly_day(chosen_day)}. "
-            f"Цена — {database.prices(callback.from_user.id)[data['category']]} ₽.",
-        )
+        # Всегда спрашиваем время — неважно, первый показ или второй
+        await state.set_state(AddShow.time)
+        await callback.message.answer("Выберите время начала спектакля.")
+        await ask_for_time(callback.message, "show")
         return
     if flow == "rehearsal":
         await state.update_data(day=chosen_day)
         await state.set_state(AddRehearsal.start)
         await ask_for_time(callback.message, "start")
-
 
 async def time_hour(callback: CallbackQuery) -> None:
     _, kind, hour = callback.data.split(":")
@@ -1076,11 +1066,11 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         dates_parts = []
         for d, t in day_time_pairs:
             if t:
-                dates_parts.append(f"{friendly_day(d)} {t}")
+                dates_parts.append(f"{friendly_day(d)} ({t})")
             else:
                 dates_parts.append(friendly_day(d))
         dates_text = ", ".join(dates_parts)
-
+        
         values = (
             row_number,
             "исполнение роли при проведении публичных показов спектакля",
