@@ -26,6 +26,7 @@ from aiogram.types import (
     Message,
 )
 from docx import Document
+from docx.enum.text import WD_TAB_ALIGNMENT
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = BASE_DIR / "data.sqlite3"
@@ -36,15 +37,12 @@ CATEGORIES = {
     "Роль второго плана": 1000,
     "Массовка": 750,
 }
-ADMIN_IDS = {
-    int(x)
-    for x in os.getenv("ADMIN_IDS", "853270660").split(",")
-    if x.strip().isdigit()
-}
+
+SUPER_ADMIN_ID = 853270660
 
 
-def is_admin(user_id: int) -> bool:
-    return user_id in ADMIN_IDS
+def is_super_admin(user_id: int) -> bool:
+    return user_id == SUPER_ADMIN_ID
 
 
 # ---------- FSM ----------
@@ -72,6 +70,11 @@ class ProfileForm(StatesGroup):
 
 class PriceForm(StatesGroup):
     amount = State()
+
+
+class BroadcastForm(StatesGroup):
+    text = State()
+    confirm = State()
 
 
 class AdminSetValue(StatesGroup):
@@ -115,6 +118,10 @@ class Database:
                     user_id INTEGER NOT NULL, category TEXT NOT NULL,
                     price INTEGER NOT NULL,
                     PRIMARY KEY (user_id, category));
+                CREATE TABLE IF NOT EXISTS admins (
+                    user_id INTEGER PRIMARY KEY,
+                    added_by INTEGER,
+                    added_at TEXT);
             """)
             columns = {row["name"] for row in db.execute("PRAGMA table_info(rehearsals)")}
             if "units" not in columns:
@@ -256,6 +263,43 @@ class Database:
             rehearsals = db.execute("SELECT COUNT(*) AS c FROM rehearsals WHERE user_id = ?", (user_id,)).fetchone()["c"]
         return {"shows": shows, "rehearsals": rehearsals}
 
+    # ---------- Управление админами ----------
+
+    def list_admins(self) -> list[sqlite3.Row]:
+        with closing(self.connect()) as db:
+            return db.execute(
+                "SELECT user_id, added_by, added_at FROM admins ORDER BY added_at"
+            ).fetchall()
+
+    def add_admin(self, user_id: int, added_by: int) -> bool:
+        with closing(self.connect()) as db, db:
+            try:
+                db.execute(
+                    "INSERT INTO admins(user_id, added_by, added_at) VALUES (?, ?, ?)",
+                    (user_id, added_by, datetime.now().isoformat(timespec="seconds")),
+                )
+                return True
+            except sqlite3.IntegrityError:
+                return False
+
+    def remove_admin(self, user_id: int) -> bool:
+        with closing(self.connect()) as db, db:
+            return db.execute(
+                "DELETE FROM admins WHERE user_id = ?", (user_id,)
+            ).rowcount > 0
+
+    def is_admin_db(self, user_id: int) -> bool:
+        if user_id == SUPER_ADMIN_ID:
+            return True
+        with closing(self.connect()) as db:
+            return db.execute(
+                "SELECT 1 FROM admins WHERE user_id = ?", (user_id,)
+            ).fetchone() is not None
+
+    def all_user_ids(self) -> list[int]:
+        with closing(self.connect()) as db:
+            rows = db.execute("SELECT user_id FROM users").fetchall()
+        return [row["user_id"] for row in rows]
 
 # ---------- Утилиты ----------
 
@@ -774,7 +818,6 @@ def _rubles_in_words(amount: float) -> str:
 
 
 # ---------- Генерация акта ----------
-
 def make_act(user_id: int, month: str, database: Database) -> Path:
     """Word-акт по образцу act_template.docx."""
     from docx.shared import Pt, Cm, Mm
@@ -805,6 +848,7 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     period_text = (f"с 1 {_MONTHS_GEN[mon]} {year} г. "
                    f"по {last_day_num} {_MONTHS_GEN[mon]} {year} г.")
 
+    # ---------- группировка показов ----------
     grouped: dict[str, dict] = {}
     for row in shows:
         key = row["title"]
@@ -813,8 +857,13 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
             "role": row["role"] or "Роль второго плана",
             "price": row["price"] or 0,
             "days": [],
+            "times": [],
         })
         grouped[key]["days"].append(row["day"])
+        grouped[key]["times"].append(row["show_time"] or "")
+
+    # сортируем группы по самой ранней дате показа
+    grouped = dict(sorted(grouped.items(), key=lambda kv: min(kv[1]["days"])))
 
     doc = Document()
 
@@ -860,20 +909,25 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     _p("сдачи-приемки оказанных услуг", align=WD_ALIGN_PARAGRAPH.CENTER,
        bold=True, indent=Cm(0), size=12, space_after=0)
 
+
     date_p = doc.add_paragraph()
     date_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
     date_p.paragraph_format.first_line_indent = Cm(0)
     date_p.paragraph_format.space_before = Pt(14)
     date_p.paragraph_format.space_after = Pt(14)
-    date_p.paragraph_format.tab_stops.add_tab_stop(Cm(16.5))
-    date_p.add_run("г. Москва\t"
-                   f"«{end_day.day:02d}» {_MONTHS_GEN[end_day.month]} "
-                   f"{end_day.year} г.")
+    date_p.add_run("г. Москва")
+    date_p.add_run(" " * 72)
+    date_p.add_run(
+        f"«{end_day.day:02d}» {_MONTHS_GEN[end_day.month]} {end_day.year} г."
+    )
 
+
+    # ---------- Преамбула ----------
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     p.paragraph_format.first_line_indent = Cm(1.25)
     p.paragraph_format.space_after = Pt(6)
+    p.paragraph_format.space_before = Pt(6)
 
     r = p.add_run(
         "Государственное бюджетное учреждение культуры города Москвы "
@@ -921,6 +975,7 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     _p(f"За период {period_text} фактически оказаны услуги "
        f"в следующем объеме:", space_after=6)
 
+    # ---------- Основная таблица ----------
     headers = ("№ п/п", "Наименование услуг", "Наименование спектакля",
                "Артистическая роль/ Вокал", "Цена за единицу, руб.",
                "Кол-во услуг", "Стоимость, руб.")
@@ -974,8 +1029,18 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         price = float(group["price"])
         summa = price * count
         total += summa
-        dates_sorted = sorted(group["days"])
-        dates_text = ", ".join(friendly_day(d) for d in dates_sorted)
+
+        day_time_pairs = list(zip(group["days"], group["times"]))
+        day_time_pairs.sort(key=lambda dt: (dt[0], dt[1] or "00:00"))
+
+        dates_parts = []
+        for d, t in day_time_pairs:
+            if t:
+                dates_parts.append(f"{friendly_day(d)} {t}")
+            else:
+                dates_parts.append(friendly_day(d))
+        dates_text = ", ".join(dates_parts)
+
         values = (
             row_number,
             "исполнение роли при проведении публичных показов спектакля",
@@ -1052,6 +1117,7 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
 
     _p("", indent=Cm(0), space_after=12)
 
+    # ---------- Подписи ----------
     sign = doc.add_table(rows=1, cols=2)
     sign.autofit = False
     sign.allow_autofit = False
@@ -1113,7 +1179,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     doc.save(path)
     return path
 
-
 # ---------- Хендлеры: акт ----------
 
 async def send_act(message: Message, user_id: int, month: str, database: Database) -> None:
@@ -1147,24 +1212,30 @@ async def ignore_callback(callback: CallbackQuery) -> None:
 
 # ---------- Админка ----------
 
-async def admin_menu(message: Message) -> None:
-    if not is_admin(message.from_user.id):
+async def admin_menu(message: Message, database: Database) -> None:
+    if not database.is_admin_db(message.from_user.id):
         await message.answer("Нет доступа.")
         return
     text = (
         "🛠 <b>Админка</b>\n\n"
-        "Команды:\n"
+        "<b>Пользователи:</b>\n"
         "/users — список всех пользователей\n"
         "/user &lt;id&gt; — подробно про пользователя\n"
-        "/del_user &lt;id&gt; — удалить пользователя и все его данные\n"
+        "/del_user &lt;id&gt; — удалить пользователя\n"
         "/set_name &lt;id&gt; &lt;ФИО&gt; — изменить ФИО\n"
-        "/set_contract &lt;id&gt; &lt;номер&gt; — изменить номер договора\n"
+        "/set_contract &lt;id&gt; &lt;номер&gt; — изменить договор\n\n"
+        "<b>Администраторы:</b>\n"
+        "/admins — список админов с кнопками\n"
+        "/add_admin &lt;id&gt; — добавить админа\n"
+        "/del_admin &lt;id&gt; — удалить админа\n\n"
+        "<b>Рассылка:</b>\n"
+        "/broadcast — отправить сообщение всем пользователям\n"
     )
     await message.answer(text, parse_mode="HTML")
 
 
 async def admin_users(message: Message, database: Database) -> None:
-    if not is_admin(message.from_user.id):
+    if not database.is_admin_db(message.from_user.id):
         return
     users = database.list_users()
     if not users:
@@ -1197,7 +1268,7 @@ async def admin_users(message: Message, database: Database) -> None:
 
 
 async def admin_user(message: Message, database: Database) -> None:
-    if not is_admin(message.from_user.id):
+    if not database.is_admin_db(message.from_user.id):
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().isdigit():
@@ -1221,7 +1292,7 @@ async def admin_user(message: Message, database: Database) -> None:
 
 
 async def admin_del_user(message: Message, database: Database) -> None:
-    if not is_admin(message.from_user.id):
+    if not database.is_admin_db(message.from_user.id):
         return
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2 or not parts[1].strip().isdigit():
@@ -1235,7 +1306,7 @@ async def admin_del_user(message: Message, database: Database) -> None:
 
 
 async def admin_set_name(message: Message, database: Database) -> None:
-    if not is_admin(message.from_user.id):
+    if not database.is_admin_db(message.from_user.id):
         return
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3 or not parts[1].strip().isdigit():
@@ -1250,7 +1321,7 @@ async def admin_set_name(message: Message, database: Database) -> None:
 
 
 async def admin_set_contract(message: Message, database: Database) -> None:
-    if not is_admin(message.from_user.id):
+    if not database.is_admin_db(message.from_user.id):
         return
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3 or not parts[1].strip().isdigit():
@@ -1263,8 +1334,135 @@ async def admin_set_contract(message: Message, database: Database) -> None:
     else:
         await message.answer(f"Пользователь {uid} не найден.")
 
-async def admin_cb_name(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_admin(callback.from_user.id):
+# ---------- Управление админами ----------
+
+async def admin_list_admins(message: Message, database: Database) -> None:
+    if not database.is_admin_db(message.from_user.id):
+        return
+    admins = database.list_admins()
+    lines = ["👑 <b>Администраторы:</b>\n"]
+    lines.append(f"• <code>{SUPER_ADMIN_ID}</code> — супер-админ (нельзя удалить)")
+    for row in admins:
+        lines.append(f"• <code>{row['user_id']}</code> — добавлен {row['added_at']}")
+    if not admins:
+        lines.append("\nОбычных админов нет.")
+    await message.answer("\n".join(lines), parse_mode="HTML")
+
+
+async def admin_add_admin(message: Message, database: Database) -> None:
+    if not database.is_admin_db(message.from_user.id):
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        await message.answer("Формат: /add_admin &lt;id&gt;")
+        return
+    uid = int(parts[1].strip())
+    if uid == SUPER_ADMIN_ID:
+        await message.answer("Это супер-админ, он и так админ.")
+        return
+    if database.add_admin(uid, message.from_user.id):
+        await message.answer(f"✅ Пользователь <code>{uid}</code> теперь админ.", parse_mode="HTML")
+    else:
+        await message.answer(f"Пользователь <code>{uid}</code> уже админ.", parse_mode="HTML")
+
+
+async def admin_del_admin(message: Message, database: Database) -> None:
+    if not database.is_admin_db(message.from_user.id):
+        return
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip().isdigit():
+        await message.answer("Формат: /del_admin &lt;id&gt;")
+        return
+    uid = int(parts[1].strip())
+    if uid == SUPER_ADMIN_ID:
+        await message.answer("Супер-админа удалить нельзя.")
+        return
+    if database.remove_admin(uid):
+        await message.answer(f"✅ Пользователь <code>{uid}</code> больше не админ.", parse_mode="HTML")
+    else:
+        await message.answer(f"Пользователь <code>{uid}</code> не был админом.", parse_mode="HTML")
+
+
+# ---------- Рассылка ----------
+
+async def admin_broadcast_start(message: Message, state: FSMContext, database: Database) -> None:
+    if not database.is_admin_db(message.from_user.id):
+        return
+    await state.set_state(BroadcastForm.text)
+    await message.answer(
+        "Введите текст рассылки.\n\n"
+        "Он будет отправлен <b>всем пользователям</b> бота.\n"
+        "Отмена: /cancel"
+    )
+
+
+async def admin_broadcast_text(message: Message, state: FSMContext) -> None:
+    text = message.text.strip()
+    if not text:
+        await message.answer("Текст не должен быть пустым. Попробуйте ещё раз.")
+        return
+    await state.update_data(broadcast_text=text)
+    await state.set_state(BroadcastForm.confirm)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Отправить всем", callback_data="bcast:confirm")],
+        [InlineKeyboardButton(text="← Отмена", callback_data="bcast:cancel")],
+    ])
+    await message.answer(
+        f"<b>Текст рассылки:</b>\n\n{text}\n\n"
+        f"Отправить всем пользователям?",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+async def admin_broadcast_confirm(callback: CallbackQuery, state: FSMContext, database: Database) -> None:
+    if not database.is_admin_db(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    data = await state.get_data()
+    text = data.get("broadcast_text")
+    if not text:
+        await callback.answer("Нет текста", show_alert=True)
+        return
+    await callback.answer()
+    await state.clear()
+
+    user_ids = database.all_user_ids()
+    total = len(user_ids)
+    sent = 0
+    failed = 0
+
+    progress = await callback.message.answer(f"📤 Рассылаю... 0/{total}")
+
+    for i, uid in enumerate(user_ids, start=1):
+        try:
+            await callback.bot.send_message(uid, text)
+            sent += 1
+        except Exception:
+            failed += 1
+        if i % 20 == 0 or i == total:
+            try:
+                await progress.edit_text(f"📤 Рассылаю... {i}/{total}")
+            except Exception:
+                pass
+        await asyncio.sleep(0.05)
+
+    await progress.edit_text(
+        f"✅ <b>Рассылка завершена</b>\n\n"
+        f"Всего пользователей: {total}\n"
+        f"Доставлено: {sent}\n"
+        f"Не доставлено: {failed}",
+        parse_mode="HTML",
+    )
+
+
+async def admin_broadcast_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.answer()
+    await state.clear()
+    await callback.message.edit_text("Рассылка отменена.")
+
+async def admin_cb_name(callback: CallbackQuery, state: FSMContext, database: Database) -> None:
+    if not database.is_admin_db(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     uid = int(callback.data.split(":")[2])
@@ -1277,8 +1475,8 @@ async def admin_cb_name(callback: CallbackQuery, state: FSMContext) -> None:
     )
 
 
-async def admin_cb_contract(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_admin(callback.from_user.id):
+async def admin_cb_contract(callback: CallbackQuery, state: FSMContext, database: Database) -> None:
+    if not database.is_admin_db(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     uid = int(callback.data.split(":")[2])
@@ -1293,7 +1491,7 @@ async def admin_cb_contract(callback: CallbackQuery, state: FSMContext) -> None:
 
 
 async def admin_cb_info(callback: CallbackQuery, database: Database) -> None:
-    if not is_admin(callback.from_user.id):
+    if not database.is_admin_db(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     uid = int(callback.data.split(":")[2])
@@ -1315,7 +1513,7 @@ async def admin_cb_info(callback: CallbackQuery, database: Database) -> None:
 
 
 async def admin_cb_delete(callback: CallbackQuery, database: Database) -> None:
-    if not is_admin(callback.from_user.id):
+    if not database.is_admin_db(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     uid = int(callback.data.split(":")[2])
@@ -1332,7 +1530,7 @@ async def admin_cb_delete(callback: CallbackQuery, database: Database) -> None:
 
 
 async def admin_cb_confirm_delete(callback: CallbackQuery, database: Database) -> None:
-    if not is_admin(callback.from_user.id):
+    if not database.is_admin_db(callback.from_user.id):
         await callback.answer("Нет доступа", show_alert=True)
         return
     uid = int(callback.data.split(":")[2])
@@ -1350,7 +1548,7 @@ async def admin_cb_cancel(callback: CallbackQuery) -> None:
 
 
 async def admin_input_name(message: Message, state: FSMContext, database: Database) -> None:
-    if not is_admin(message.from_user.id):
+    if not database.is_admin_db(message.from_user.id):
         return
     data = await state.get_data()
     uid = data.get("admin_target_uid")
@@ -1367,7 +1565,7 @@ async def admin_input_name(message: Message, state: FSMContext, database: Databa
 
 
 async def admin_input_contract(message: Message, state: FSMContext, database: Database) -> None:
-    if not is_admin(message.from_user.id):
+    if not database.is_admin_db(message.from_user.id):
         return
     data = await state.get_data()
     uid = data.get("admin_target_uid")
@@ -1442,6 +1640,11 @@ def dispatcher(database: Database) -> Dispatcher:
     dp.message.register(admin_del_user, Command("del_user"))
     dp.message.register(admin_set_name, Command("set_name"))
     dp.message.register(admin_set_contract, Command("set_contract"))
+    dp.message.register(admin_broadcast_text, BroadcastForm.text, F.text)
+    dp.message.register(admin_list_admins, Command("admins"))
+    dp.message.register(admin_add_admin, Command("add_admin"))
+    dp.message.register(admin_del_admin, Command("del_admin"))
+    dp.message.register(admin_broadcast_start, Command("broadcast"))
     dp.message.register(admin_input_name, AdminSetValue.name, F.text)
     dp.message.register(admin_input_contract, AdminSetValue.contract, F.text)
 
@@ -1470,6 +1673,8 @@ def dispatcher(database: Database) -> Dispatcher:
     dp.callback_query.register(time_skip, F.data.startswith("timeskip:"))
     dp.callback_query.register(delete_record, F.data.startswith("delete:"))
     dp.callback_query.register(ignore_callback, F.data == "ignore")
+    dp.callback_query.register(admin_broadcast_confirm, F.data == "bcast:confirm")
+    dp.callback_query.register(admin_broadcast_cancel, F.data == "bcast:cancel")
     dp.callback_query.register(admin_cb_name, F.data.startswith("adm:name:"))
     dp.callback_query.register(admin_cb_contract, F.data.startswith("adm:contract:"))
     dp.callback_query.register(admin_cb_info, F.data.startswith("adm:info:"))
