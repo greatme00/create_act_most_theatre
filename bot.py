@@ -158,7 +158,7 @@ class Database:
             db.execute(
                 """INSERT INTO shows (user_id, title, role, category, price, day, show_time)
                    VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, data["title"], "", data["category"], price, data["day"], data.get("time", "")),
+                (user_id, data["title"], data["category"], data["category"], price, data["day"], data.get("time", "")),
             )
 
     def add_rehearsal(self, user_id: int, data: dict[str, str | None]) -> None:
@@ -849,12 +849,13 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
                    f"по {last_day_num} {_MONTHS_GEN[mon]} {year} г.")
 
     # ---------- группировка показов ----------
-    grouped: dict[str, dict] = {}
+    grouped: dict[tuple, dict] = {}
     for row in shows:
-        key = row["title"]
+        category = row["category"] or "Роль второго плана"
+        key = (row["title"], category)   # группируем по названию + категории
         grouped.setdefault(key, {
-            "title": key,
-            "role": row["role"] or "Роль второго плана",
+            "title": row["title"],
+            "role": category,
             "price": row["price"] or 0,
             "days": [],
             "times": [],
