@@ -26,17 +26,24 @@ from aiogram.types import (
     Message,
 )
 from docx import Document
-from docx.enum.text import WD_TAB_ALIGNMENT
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = BASE_DIR / "data.sqlite3"
 ACTS_DIR = BASE_DIR / "acts"
-CATEGORIES = {
+
+# Категории спектаклей (без репетиции) — используются в меню добавления спектакля
+SHOW_CATEGORIES = {
     "Главная роль": 1500,
     "Роль первого плана": 1250,
     "Роль второго плана": 1000,
     "Массовка": 750,
 }
+
+# Категории, доступные в меню «Мои цены» (показ + репетиция)
+PRICE_CATEGORIES = list(SHOW_CATEGORIES.keys()) + ["Репетиция"]
+
+# Дефолтные цены (если пользователь ничего не менял)
+DEFAULT_PRICES = {**SHOW_CATEGORIES, "Репетиция": 750}
 
 SUPER_ADMIN_ID = 853270660
 
@@ -80,6 +87,7 @@ class BroadcastForm(StatesGroup):
 class AdminSetValue(StatesGroup):
     name = State()
     contract = State()
+
 
 # ---------- База данных ----------
 
@@ -139,7 +147,8 @@ class Database:
             )
 
     def prices(self, user_id: int) -> dict[str, int]:
-        result = dict(CATEGORIES)
+        """Возвращает актуальные цены пользователя: дефолт + переопределения из user_prices."""
+        result = dict(DEFAULT_PRICES)
         with closing(self.connect()) as db:
             for row in db.execute("SELECT category, price FROM user_prices WHERE user_id = ?", (user_id,)):
                 result[row["category"]] = row["price"]
@@ -163,11 +172,12 @@ class Database:
 
     def add_rehearsal(self, user_id: int, data: dict[str, str | None]) -> None:
         units = rehearsal_units(data["start"], data["end"])
+        price = self.prices(user_id).get("Репетиция", 750)
         with closing(self.connect()) as db, db:
             db.execute(
-                """INSERT INTO rehearsals (user_id, title, units, day, time_start, time_end)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (user_id, data["title"], units, data["day"], data["start"], data["end"]),
+                """INSERT INTO rehearsals (user_id, title, units, day, time_start, time_end, price)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (user_id, data["title"], units, data["day"], data["start"], data["end"], price),
             )
 
     def month_rows(self, table: str, user_id: int, month: str) -> list[sqlite3.Row]:
@@ -301,6 +311,7 @@ class Database:
             rows = db.execute("SELECT user_id FROM users").fetchall()
         return [row["user_id"] for row in rows]
 
+
 # ---------- Утилиты ----------
 
 def load_env() -> None:
@@ -316,18 +327,6 @@ def month_now(offset: int = 0) -> str:
     current = date.today()
     number = current.year * 12 + current.month - 1 + offset
     return f"{number // 12:04d}-{number % 12 + 1:02d}"
-
-
-def parse_day(text: str) -> str | None:
-    for pattern in ("%d.%m.%Y", "%d.%m"):
-        try:
-            parsed = datetime.strptime(text.strip(), pattern)
-            if pattern == "%d.%m":
-                parsed = parsed.replace(year=date.today().year)
-            return parsed.strftime("%Y-%m-%d")
-        except ValueError:
-            continue
-    return None
 
 
 def parse_time(text: str) -> str | None:
@@ -436,7 +435,7 @@ async def start(message: Message, state: FSMContext, database: Database) -> None
     await state.clear()
     if not database.profile(message.from_user.id):
         await state.set_state(ProfileForm.full_name)
-        await message.answer("Для первого акта напишите ФИО полностью. Например: Бафаев Алексей Рахимович")
+        await message.answer("Для первого акта напишите ФИО полностью. Например: Славутин Евгений Иосифович")
         return
     await show_menu(message, "Привет! Я помогу вести журнал спектаклей и репетиций.\n\nВыберите действие ниже.")
 
@@ -463,14 +462,18 @@ async def prices_menu(callback: CallbackQuery, database: Database) -> None:
     await callback.answer()
     prices = database.prices(callback.from_user.id)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{category}: {price} ₽", callback_data=f"price:{index}")]
-        for index, (category, price) in enumerate(prices.items())
+        [InlineKeyboardButton(text=f"{category}: {prices[category]} ₽", callback_data=f"price:{index}")]
+        for index, category in enumerate(PRICE_CATEGORIES)
     ] + [[InlineKeyboardButton(text="← В меню", callback_data="menu")]])
     await callback.message.answer("Текущие цены. Нажмите категорию, чтобы изменить цену:", reply_markup=keyboard)
 
 
 async def price_pick(callback: CallbackQuery, state: FSMContext) -> None:
-    category = list(CATEGORIES)[int(callback.data.split(":")[1])]
+    index = int(callback.data.split(":")[1])
+    if index < 0 or index >= len(PRICE_CATEGORIES):
+        await callback.answer("Ошибка: неизвестная категория", show_alert=True)
+        return
+    category = PRICE_CATEGORIES[index]
     await callback.answer()
     await state.update_data(price_category=category)
     await state.set_state(PriceForm.amount)
@@ -520,7 +523,7 @@ async def help_handler(callback: CallbackQuery) -> None:
 async def add_show(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(AddShow.title)
-    await callback.message.answer("Введите название спектакля:\nНапример: «Вишнёвый сад»")
+    await callback.message.answer("Введите название спектакля:\nНапример: «Вишневый сад»")
 
 
 async def save_show_title(message: Message, state: FSMContext) -> None:
@@ -532,14 +535,17 @@ async def save_show_title(message: Message, state: FSMContext) -> None:
     await state.set_state(AddShow.category)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"{name} — {price} ₽", callback_data=f"category:{index}")]
-        for index, (name, price) in enumerate(CATEGORIES.items())
+        for index, (name, price) in enumerate(SHOW_CATEGORIES.items())
     ])
     await message.answer("Выберите категорию — цена подставится сама:", reply_markup=keyboard)
 
 
 async def save_show_category(callback: CallbackQuery, state: FSMContext, database: Database) -> None:
     index = int(callback.data.split(":")[1])
-    category = list(CATEGORIES)[index]
+    if index < 0 or index >= len(SHOW_CATEGORIES):
+        await callback.answer("Ошибка: неизвестная категория", show_alert=True)
+        return
+    category = list(SHOW_CATEGORIES.keys())[index]
     await callback.answer(f"{category}: {database.prices(callback.from_user.id)[category]} ₽")
     await state.update_data(category=category)
     await ask_for_day(callback.message, state)
@@ -670,10 +676,11 @@ async def save_rehearsal(
     database.add_rehearsal(telegram_user_id, data)
     units = rehearsal_units(data.get("start"), data.get("end"))
     await state.clear()
+    price = database.prices(telegram_user_id).get("Репетиция", 750)
     await show_menu(
         message,
         f"✅ Репетиция «{data['title']}» на {friendly_day(data['day'])} сохранена. "
-        f"Засчитано: {units}. Цена — {units * 750} ₽.",
+        f"Засчитано: {units}. Цена — {units * price} ₽.",
     )
 
 
@@ -698,8 +705,14 @@ async def view_month(callback: CallbackQuery, state: FSMContext, database: Datab
 async def send_month(message: Message, user_id: int, month: str, database: Database) -> None:
     shows = database.month_rows("shows", user_id, month)
     rehearsals = database.month_rows("rehearsals", user_id, month)
+    user_prices = database.prices(user_id)
+
     rehearsal_units_total = sum(row["units"] for row in rehearsals)
-    total = sum(row["price"] or 0 for row in shows) + rehearsal_units_total * 750
+    rehearsal_price = user_prices.get("Репетиция", 750)
+    total = (
+        sum(row["price"] or 0 for row in shows)
+        + rehearsal_units_total * rehearsal_price
+    )
     text = [f"📅 {month}"]
     keyboard_rows = []
     if shows:
@@ -715,7 +728,7 @@ async def send_month(message: Message, user_id: int, month: str, database: Datab
         for row in rehearsals:
             clock = "" if not row["time_start"] else f" ({row['time_start']}–{row['time_end'] or '?'})"
             units = row["units"]
-            text.append(f"• {friendly_day(row['day'])} — {row['title']}{clock} — {units} × 750 = {units * 750} ₽")
+            text.append(f"• {friendly_day(row['day'])} — {row['title']}{clock} — {units} × {rehearsal_price} = {units * rehearsal_price} ₽")
             keyboard_rows.append([
                 InlineKeyboardButton(text=f"Удалить репетицию: {row['title']}", callback_data=f"delete:rehearsals:{row['id']}")
             ])
@@ -818,6 +831,7 @@ def _rubles_in_words(amount: float) -> str:
 
 
 # ---------- Генерация акта ----------
+
 def make_act(user_id: int, month: str, database: Database) -> Path:
     """Word-акт по образцу act_template.docx."""
     from docx.shared import Pt, Cm, Mm
@@ -828,6 +842,7 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
 
     shows = database.month_rows("shows", user_id, month)
     rehearsals = database.month_rows("rehearsals", user_id, month)
+    user_prices = database.prices(user_id)
     profile = database.profile(user_id)
     full_name = (profile["full_name"] if profile and profile["full_name"] else "ВВЕДИТЕ ИМЯ")
     contract_number = (profile["contract_number"] if profile else None) or ""
@@ -840,8 +855,6 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     else:
         sign_name = full_name
 
-    rehearsal_price = 750
-
     year, mon = int(month[:4]), int(month[5:7])
     last_day_num = calendar.monthrange(year, mon)[1]
     end_day = date(year, mon, last_day_num)
@@ -849,14 +862,15 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
                    f"по {last_day_num} {_MONTHS_GEN[mon]} {year} г.")
 
     # ---------- группировка показов ----------
+    # Группируем по (название, категория). Цена берётся из АКТУАЛЬНЫХ цен пользователя.
     grouped: dict[tuple, dict] = {}
     for row in shows:
         category = row["category"] or "Роль второго плана"
-        key = (row["title"], category)   # группируем по названию + категории
+        key = (row["title"], category)
         grouped.setdefault(key, {
             "title": row["title"],
             "role": category,
-            "price": row["price"] or 0,
+            "price": float(user_prices.get(category, row["price"] or 0)),
             "days": [],
             "times": [],
         })
@@ -910,18 +924,39 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     _p("сдачи-приемки оказанных услуг", align=WD_ALIGN_PARAGRAPH.CENTER,
        bold=True, indent=Cm(0), size=12, space_after=0)
 
+    # ---------- Дата документа (таблица 2 колонки) ----------
+    date_table = doc.add_table(rows=1, cols=2)
+    date_table.autofit = False
+    date_table.allow_autofit = False
+    left_cell, right_cell = date_table.rows[0].cells
+    left_cell.width = Cm(8.25)
+    right_cell.width = Cm(8.25)
 
-    date_p = doc.add_paragraph()
-    date_p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    date_p.paragraph_format.first_line_indent = Cm(0)
-    date_p.paragraph_format.space_before = Pt(14)
-    date_p.paragraph_format.space_after = Pt(14)
-    date_p.add_run("г. Москва")
-    date_p.add_run(" " * 72)
-    date_p.add_run(
-        f"«{end_day.day:02d}» {_MONTHS_GEN[end_day.month]} {end_day.year} г."
-    )
+    left_cell.text = ""
+    p_left = left_cell.paragraphs[0]
+    p_left.alignment = WD_ALIGN_PARAGRAPH.LEFT
+    p_left.paragraph_format.space_before = Pt(14)
+    p_left.paragraph_format.space_after = Pt(14)
+    p_left.paragraph_format.first_line_indent = Cm(0)
+    p_left.add_run("г. Москва")
 
+    right_cell.text = ""
+    p_right = right_cell.paragraphs[0]
+    p_right.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    p_right.paragraph_format.space_before = Pt(14)
+    p_right.paragraph_format.space_after = Pt(14)
+    p_right.paragraph_format.first_line_indent = Cm(0)
+    p_right.add_run(f"«{end_day.day:02d}» {_MONTHS_GEN[end_day.month]} {end_day.year} г.")
+
+    date_tbl_pr = date_table._tbl.tblPr
+    date_borders = OxmlElement("w:tblBorders")
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        el = OxmlElement(f"w:{edge}")
+        el.set(qn("w:val"), "none")
+        el.set(qn("w:sz"), "0")
+        el.set(qn("w:space"), "0")
+        date_borders.append(el)
+    date_tbl_pr.append(date_borders)
 
     # ---------- Преамбула ----------
     p = doc.add_paragraph()
@@ -1060,6 +1095,8 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     if rehearsals:
         row_number += 1
         units = sum(r["units"] for r in rehearsals)
+        # Цена репетиции берётся из АКТУАЛЬНЫХ цен пользователя
+        rehearsal_price = float(user_prices.get("Репетиция", 750))
         summa = rehearsal_price * units
         total += summa
         days_sorted = sorted(r["day"] for r in rehearsals)
@@ -1180,6 +1217,7 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
     doc.save(path)
     return path
 
+
 # ---------- Хендлеры: акт ----------
 
 async def send_act(message: Message, user_id: int, month: str, database: Database) -> None:
@@ -1243,10 +1281,8 @@ async def admin_users(message: Message, database: Database) -> None:
         await message.answer("Пользователей в базе нет.")
         return
 
-    # Один заголовок
     await message.answer("👥 <b>Пользователи:</b>", parse_mode="HTML")
 
-    # По карточке на пользователя
     for u in users:
         contract = u["contract_number"] or "—"
         text = (
@@ -1334,6 +1370,7 @@ async def admin_set_contract(message: Message, database: Database) -> None:
         await message.answer(f"✅ Договор пользователя {uid} изменён на «{new_contract}».")
     else:
         await message.answer(f"Пользователь {uid} не найден.")
+
 
 # ---------- Управление админами ----------
 
@@ -1461,6 +1498,9 @@ async def admin_broadcast_cancel(callback: CallbackQuery, state: FSMContext) -> 
     await callback.answer()
     await state.clear()
     await callback.message.edit_text("Рассылка отменена.")
+
+
+# ---------- Админ-кнопки на карточках пользователей ----------
 
 async def admin_cb_name(callback: CallbackQuery, state: FSMContext, database: Database) -> None:
     if not database.is_admin_db(callback.from_user.id):
@@ -1649,7 +1689,6 @@ def dispatcher(database: Database) -> Dispatcher:
     dp.message.register(admin_input_name, AdminSetValue.name, F.text)
     dp.message.register(admin_input_contract, AdminSetValue.contract, F.text)
 
-
     dp.message.register(cancel, Command("cancel"))
     dp.message.register(start, CommandStart())
     dp.message.register(profile_name, ProfileForm.full_name, F.text)
@@ -1688,8 +1727,6 @@ def dispatcher(database: Database) -> Dispatcher:
     dp.message.register(save_rehearsal_title, AddRehearsal.title, F.text)
     dp.message.register(custom_month, PickMonth.month, F.text)
     dp.message.register(unknown, F.text)
-
-
 
     return dp
 
