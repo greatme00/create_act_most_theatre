@@ -26,6 +26,8 @@ from aiogram.types import (
     Message,
 )
 from docx import Document
+from collections import Counter
+
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = BASE_DIR / "data.sqlite3"
@@ -373,8 +375,13 @@ def calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
 
 
 def hour_keyboard(kind: str) -> InlineKeyboardMarkup:
-    rows = [[InlineKeyboardButton(text=f"{hour:02d}", callback_data=f"timehour:{kind}:{hour:02d}")
-             for hour in range(begin, begin + 6)] for begin in range(0, 24, 6)]
+    # Кнопки часов — сразу выбирают время HH:00
+    hours = list(range(6, 24))  # с 6 утра до 23 вечера
+    rows = []
+    for i in range(0, len(hours), 6):
+        row = [InlineKeyboardButton(text=f"{h:02d}", callback_data=f"timehour:{kind}:{h:02d}")
+               for h in hours[i:i + 6]]
+        rows.append(row)
     if kind != "show":
         rows.append([InlineKeyboardButton(text="Не указывать", callback_data=f"timeskip:{kind}")])
     rows.append([InlineKeyboardButton(text="Отмена", callback_data="menu")])
@@ -523,7 +530,7 @@ async def help_handler(callback: CallbackQuery) -> None:
 async def add_show(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(AddShow.title)
-    await callback.message.answer("Введите название спектакля:\nНапример: «Гамлет»")
+    await callback.message.answer("Введите название спектакля:\nНапример: Вишневый Сад")
 
 
 async def save_show_title(message: Message, state: FSMContext, database: Database) -> None:
@@ -599,9 +606,25 @@ async def calendar_day(callback: CallbackQuery, state: FSMContext, database: Dat
         await state.set_state(AddRehearsal.start)
         await ask_for_time(callback.message, "start")
 
-async def time_hour(callback: CallbackQuery) -> None:
+async def time_hour(callback: CallbackQuery, state: FSMContext, database: Database) -> None:
     _, kind, hour = callback.data.split(":")
     await callback.answer()
+
+    if kind == "show":
+        # Спектакль — сразу HH:00, без минут
+        value = f"{hour}:00"
+        await state.update_data(time=value)
+        data = await state.get_data()
+        database.add_show(callback.from_user.id, data)
+        await state.clear()
+        await show_menu(
+            callback.message,
+            f"✅ Сохранил: {data['title']}, {friendly_day(data['day'])} в {value}. "
+            f"Цена — {database.prices(callback.from_user.id)[data['category']]} ₽.",
+        )
+        return
+
+    # Репетиция (start / end) — показываем выбор минут
     await callback.message.edit_reply_markup(reply_markup=minute_keyboard(kind, hour))
 
 
@@ -1060,17 +1083,22 @@ def make_act(user_id: int, month: str, database: Database) -> Path:
         summa = price * count
         total += summa
 
+        # Считаем, сколько показов в каждый день
+        from collections import Counter
+        day_counts = Counter(group["days"])
+
         day_time_pairs = list(zip(group["days"], group["times"]))
         day_time_pairs.sort(key=lambda dt: (dt[0], dt[1] or "00:00"))
 
         dates_parts = []
         for d, t in day_time_pairs:
-            if t:
+            # Время показываем только если в этот день 2+ показа
+            if t and day_counts[d] > 1:
                 dates_parts.append(f"{friendly_day(d)} ({t})")
             else:
                 dates_parts.append(friendly_day(d))
         dates_text = ", ".join(dates_parts)
-        
+
         values = (
             row_number,
             "исполнение роли при проведении публичных показов спектакля",
