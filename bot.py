@@ -526,15 +526,19 @@ async def add_show(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.message.answer("Введите название спектакля:\nНапример: «Гамлет»")
 
 
-async def save_show_title(message: Message, state: FSMContext) -> None:
+async def save_show_title(message: Message, state: FSMContext, database: Database) -> None:
     text = message.text.strip()
     if not text:
         await message.answer("Название не должно быть пустым.")
         return
     await state.update_data(title=text)
     await state.set_state(AddShow.category)
+    user_prices = database.prices(message.from_user.id)
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"{name} — {price} ₽", callback_data=f"category:{index}")]
+        [InlineKeyboardButton(
+            text=f"{name} — {user_prices.get(name, price)} ₽",
+            callback_data=f"category:{index}",
+        )]
         for index, (name, price) in enumerate(SHOW_CATEGORIES.items())
     ])
     await message.answer("Выберите категорию — цена подставится сама:", reply_markup=keyboard)
