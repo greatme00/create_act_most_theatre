@@ -523,7 +523,7 @@ async def help_handler(callback: CallbackQuery) -> None:
 async def add_show(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
     await state.set_state(AddShow.title)
-    await callback.message.answer("Введите название спектакля:\nНапример: «Вишневый сад»")
+    await callback.message.answer("Введите название спектакля:\nНапример: «Гамлет»")
 
 
 async def save_show_title(message: Message, state: FSMContext) -> None:
