@@ -124,6 +124,12 @@ class Database:
             columns = {row["name"] for row in db.execute("PRAGMA table_info(rehearsals)")}
             if "units" not in columns:
                 db.execute("ALTER TABLE rehearsals ADD COLUMN units INTEGER NOT NULL DEFAULT 1")
+                            # Миграция users: колонки status и gender
+            user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
+            if "status" not in user_columns:
+                db.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'self_employed'")
+            if "gender" not in user_columns:
+                db.execute("ALTER TABLE users ADD COLUMN gender TEXT DEFAULT 'm'")
 
     # ---------- Тексты акта ----------
 
@@ -161,11 +167,20 @@ class Database:
         with closing(self.connect()) as db:
             return db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
 
-    def save_profile(self, user_id: int, full_name: str, contract_number: str | None) -> None:
+    def save_profile(
+        self,
+        user_id: int,
+        full_name: str,
+        contract_number: str | None,
+        status: str = "self_employed",
+        gender: str = "m",
+    ) -> None:
         with closing(self.connect()) as db, db:
             db.execute(
-                "INSERT OR REPLACE INTO users(user_id, full_name, contract_number) VALUES (?, ?, ?)",
-                (user_id, full_name, contract_number),
+                """INSERT OR REPLACE INTO users
+                   (user_id, full_name, contract_number, status, gender)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (user_id, full_name, contract_number, status, gender),
             )
 
     # ----- цены -----
@@ -297,6 +312,20 @@ class Database:
             return db.execute(
                 "UPDATE users SET contract_number = ? WHERE user_id = ?",
                 (contract, user_id),
+            ).rowcount > 0
+
+    def set_user_status(self, user_id: int, status: str) -> bool:
+        with closing(self.connect()) as db, db:
+            return db.execute(
+                "UPDATE users SET status = ? WHERE user_id = ?",
+                (status, user_id),
+            ).rowcount > 0
+
+    def set_user_gender(self, user_id: int, gender: str) -> bool:
+        with closing(self.connect()) as db, db:
+            return db.execute(
+                "UPDATE users SET gender = ? WHERE user_id = ?",
+                (gender, user_id),
             ).rowcount > 0
 
     def user_stats(self, user_id: int) -> dict[str, int]:
