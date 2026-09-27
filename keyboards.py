@@ -47,14 +47,12 @@ def calendar_keyboard(year: int, month: int) -> InlineKeyboardMarkup:
 
 def hour_keyboard(kind: str) -> InlineKeyboardMarkup:
     if kind == "show":
-        # Спектакль: с 10:00 до 21:00
-        hours = list(range(10, 22))
+        hours = list(range(10, 22))           # 10:00 – 21:00
     elif kind == "start":
-        # Репетиция: начало с 10:00 до 22:00
-        hours = list(range(10, 23))
-    else:
-        # Репетиция: окончание — любое время суток (включая ночь)
-        hours = list(range(0, 24))
+        hours = list(range(10, 23))           # 10:00 – 22:00
+    else:  # end — окончание репетиции
+        # 10:00 ... 23:00, 00:00, 01:00
+        hours = list(range(10, 24)) + [0, 1]
 
     rows = []
     for i in range(0, len(hours), 6):

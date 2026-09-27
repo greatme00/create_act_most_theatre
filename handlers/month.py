@@ -63,6 +63,19 @@ def _short_date(day: str) -> str:
     return datetime.strptime(day, "%Y-%m-%d").strftime("%d.%m")
 
 
+_MONTHS_RU_NOM = {
+    "01": "Январь", "02": "Февраль", "03": "Март", "04": "Апрель",
+    "05": "Май", "06": "Июнь", "07": "Июль", "08": "Август",
+    "09": "Сентябрь", "10": "Октябрь", "11": "Ноябрь", "12": "Декабрь",
+}
+
+
+def _format_month(month: str) -> str:
+    """'2026-09' → 'Сентябрь 2026'."""
+    year, mon = month.split("-")
+    return f"{_MONTHS_RU_NOM.get(mon, mon)} {year}"
+
+
 async def send_month(message: Message, user_id: int, month: str, database: Database) -> None:
     shows = database.month_rows("shows", user_id, month)
     rehearsals = database.month_rows("rehearsals", user_id, month)
@@ -75,21 +88,32 @@ async def send_month(message: Message, user_id: int, month: str, database: Datab
         + rehearsal_units_total * rehearsal_price
     )
 
-    text = [f"📅 {month}"]
+    text = [f"📅 <b>{_format_month(month)}</b>", ""]
+    if shows or rehearsals:
+        text.append(f"💰 Заработано: <b>{total} ₽</b>")
+        text.append(f"🎭 Спектаклей: {len(shows)}")
+        text.append(f"🎬 Репетиций: {len(rehearsals)}")
+        text.append("")
+        text.append("<i>Чтобы удалить запись, нажмите на соотвествующую кнопку ниже.</i>")
+    else:
+        text.append("Пока пусто. Добавьте первую запись.")
+
     keyboard_rows = []
 
     if shows:
-        text.append("\nСпектакли:")
+        from config import short_category
+        text.append("\n<b>Спектакли:</b>")
         for row in shows:
             time_text = f", {row['show_time']}" if row["show_time"] else ""
+            category = short_category(row["category"] or "Роль второго плана")
             text.append(
-                f"• {friendly_day(row['day'])}{time_text} — "
-                f"{row['title']} — {row['price'] or 'цена не указана'} ₽"
+                f"• {friendly_day(row['day'])} — {row['title']}{time_text} — {category}"
             )
             keyboard_rows.append([_show_delete_button(row)])
 
+
     if rehearsals:
-        text.append("\nРепетиции:")
+        text.append("\n<b>Репетиции:</b>")
         for row in rehearsals:
             clock = "" if not row["time_start"] else f" ({row['time_start']}–{row['time_end'] or '?'})"
             units = row["units"]
@@ -99,24 +123,21 @@ async def send_month(message: Message, user_id: int, month: str, database: Datab
             )
             keyboard_rows.append([_rehearsal_delete_button(row)])
 
-    if not shows and not rehearsals:
-        text.append("\nПока пусто. Добавьте первую запись.")
-    else:
-        text.append(f"\nИтого за месяц: {total} ₽")
-
     keyboard_rows.append([InlineKeyboardButton(text="← В меню", callback_data="menu")])
-    await message.answer("\n".join(text), reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows))
-
+    await message.answer(
+        "\n".join(text),
+        parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard_rows),
+    )
 
 def _show_delete_button(row) -> InlineKeyboardButton:
     from config import short_category
     title = truncate(row["title"], 12)
-    time_text = f" {row['show_time']}" if row["show_time"] else ""
-    category = short_category(row["category"] or "")
-    label = f"{EMOJI_SHOW} {title} — {_short_date(row['day'])}{time_text} — {category}"
+    time_text = f", {row['show_time']}" if row["show_time"] else ""
+    category = short_category(row["category"] or "Роль второго плана")
+    label = f"{EMOJI_SHOW} Спект. {title} — {_short_date(row['day'])}{time_text} — {category}"
     label = truncate(label, BUTTON_MAX_LENGTH)
     return InlineKeyboardButton(text=label, callback_data=f"delete:shows:{row['id']}")
-
 
 def _rehearsal_delete_button(row) -> InlineKeyboardButton:
     title = truncate(row["title"], 12)

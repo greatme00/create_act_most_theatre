@@ -22,7 +22,7 @@ async def start(message: Message, state: FSMContext, database: Database) -> None
         from handlers.user import ProfileForm
         await state.set_state(ProfileForm.full_name)
         await message.answer(
-            "Для первого акта напишите ФИО полностью. "
+            "Давайте знакомиться. Напишите ФИО полностью - это нужно для акта. "
             "Например: Славутин Евгений Иосифович"
         )
         return
@@ -53,7 +53,8 @@ async def help_handler(callback: CallbackQuery) -> None:
         "• Добавляйте спектакли и репетиции по шагам.\n"
         "• «Мой месяц» показывает записи и позволяет удалить ошибочную.\n"
         "• «Скачать акт» создаёт Word-файл.\n\n"
-        "В любой момент отправьте /cancel, чтобы отменить ввод.",
+        "В любой момент отправьте /cancel, чтобы отменить ввод.\n\n"
+        "По вопросам и предложениям пишите: @alekseybafaev",
         reply_markup=main_keyboard(),
     )
 
