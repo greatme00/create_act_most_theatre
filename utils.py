@@ -69,3 +69,33 @@ def detect_gender(full_name: str) -> str:
     if first.endswith(("а", "я", "ия", "ья")):
         return "f"
     return "m"
+
+def load_quotes(path) -> list[tuple[str, str, str]]:
+    """Читает quotes.txt. Формат строки: Тема|Текст|Источник."""
+    if not path.exists():
+        return []
+    result = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        parts = line.split("|")
+        if len(parts) < 2:
+            continue
+        theme = parts[0].strip()
+        text = parts[1].strip()
+        source = parts[2].strip() if len(parts) > 2 else ""
+        if text:
+            result.append((theme, text, source))
+    return result
+
+
+def format_quote(theme: str, text: str, source: str) -> str:
+    """Формирует текст сообщения с цитатой."""
+    lines = ["🎭 <b>Цитата дня</b>"]
+    if theme:
+        lines.append(f"\n<b>{theme}</b>")
+    lines.append(f"\n«{text}»")
+    if source:
+        lines.append(f"\n— К.С. Станиславский, {source}")
+    return "\n".join(lines)

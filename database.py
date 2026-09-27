@@ -153,6 +153,9 @@ class Database:
                 CREATE TABLE IF NOT EXISTS act_texts (
                     key TEXT PRIMARY KEY,
                     text TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS user_settings (
+                    user_id INTEGER PRIMARY KEY,
+                    quotes_subscribed INTEGER NOT NULL DEFAULT 1);
             """)
 
             # Миграция rehearsals: units
@@ -406,4 +409,36 @@ class Database:
     def all_user_ids(self) -> list[int]:
         with closing(self.connect()) as db:
             rows = db.execute("SELECT user_id FROM users").fetchall()
+        return [row["user_id"] for row in rows]
+
+        # ----- настройки пользователя -----
+
+    def is_quotes_subscribed(self, user_id: int) -> bool:
+        """По умолчанию — подписан."""
+        with closing(self.connect()) as db:
+            row = db.execute(
+                "SELECT quotes_subscribed FROM user_settings WHERE user_id = ?",
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            return True
+        return bool(row["quotes_subscribed"])
+
+    def set_quotes_subscribed(self, user_id: int, value: bool) -> None:
+        with closing(self.connect()) as db, db:
+            db.execute(
+                """INSERT INTO user_settings(user_id, quotes_subscribed)
+                   VALUES (?, ?)
+                   ON CONFLICT(user_id) DO UPDATE SET quotes_subscribed = excluded.quotes_subscribed""",
+                (user_id, 1 if value else 0),
+            )
+
+    def subscribed_user_ids(self) -> list[int]:
+        """ID всех, кто подписан на цитаты."""
+        with closing(self.connect()) as db:
+            rows = db.execute("""
+                SELECT u.user_id FROM users u
+                LEFT JOIN user_settings s ON s.user_id = u.user_id
+                WHERE COALESCE(s.quotes_subscribed, 1) = 1
+            """).fetchall()
         return [row["user_id"] for row in rows]

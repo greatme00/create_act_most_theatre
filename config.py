@@ -10,6 +10,7 @@ import env  # noqa: F401
 BASE_DIR = Path(__file__).resolve().parent
 DB_FILE = BASE_DIR / "data.sqlite3"
 ACTS_DIR = BASE_DIR / "acts"
+QUOTES_FILE = BASE_DIR / "quotes.txt"
 
 # ---------- Категории спектаклей (для добавления показа) ----------
 SHOW_CATEGORIES = {

@@ -5,14 +5,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 import env  # noqa: F401 — загружает .env при импорте
-from config import DB_FILE
+from config import DB_FILE, QUOTES_FILE
 from database import Database
 from handlers import get_main_router
+from utils import load_quotes, format_quote
 
 
 # ---------- Фоновые задачи ----------
@@ -62,6 +67,47 @@ async def cleanup_acts_loop() -> None:
         await asyncio.sleep(3600)
 
 
+async def quotes_loop(bot: Bot, database: Database) -> None:
+    """Раз в день в 12:00 МСК отправляет случайную цитату подписчикам."""
+    timezone = ZoneInfo("Europe/Moscow")
+    last_sent_day = None
+
+    while True:
+        now = datetime.now(timezone)
+        today = now.date()
+
+        # Отправляем, если уже 12:00+ и сегодня ещё не отправляли
+        if now.hour >= 12 and last_sent_day != today:
+            quotes = load_quotes(QUOTES_FILE)
+            if not quotes:
+                logging.warning("quotes.txt пуст или не найден — рассылка пропущена")
+                last_sent_day = today
+                await asyncio.sleep(60)
+                continue
+
+            theme, text, source = random.choice(quotes)
+            message_text = format_quote(theme, text, source)
+
+            keyboard = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(text="🔕 Отписаться", callback_data="quotes:unsubscribe")],
+            ])
+
+            user_ids = database.subscribed_user_ids()
+            sent = 0
+            failed = 0
+            for uid in user_ids:
+                try:
+                    await bot.send_message(uid, message_text, parse_mode="HTML", reply_markup=keyboard)
+                    sent += 1
+                except Exception:
+                    failed += 1
+                await asyncio.sleep(0.05)
+
+            logging.info("Цитата дня отправлена: %s / %s", sent, failed)
+            last_sent_day = today
+
+        await asyncio.sleep(60)  # проверяем раз в минуту
+
 # ---------- main ----------
 
 async def main() -> None:
@@ -89,6 +135,8 @@ async def main() -> None:
 
     asyncio.create_task(reminder_loop(bot, database))
     asyncio.create_task(cleanup_acts_loop())
+    asyncio.create_task(quotes_loop(bot, database))
+
 
     await dp.start_polling(bot, drop_pending_updates=True)
 
