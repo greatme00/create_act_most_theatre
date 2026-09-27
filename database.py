@@ -9,7 +9,8 @@ from config import SUPER_ADMIN_IDS
 
 
 # ---------- Тексты по умолчанию для акта ----------
-# Плейсхолдеры: {full_name}, {contract_number}, {month}, {year}
+# Плейсхолдеры: {full_name}, {sign_name}, {contract_number}, {period},
+#               {month}, {year}, {gender_ending}, {ndfl_amount}, {insurance_amount}
 DEFAULT_ACT_TEXTS = {
     "header_city": "г. Москва",
     "preamble_theater": (
@@ -22,10 +23,16 @@ DEFAULT_ACT_TEXTS = {
         "Черепнева Алексея Анатольевича, действующего на основании Устава, "
         "с одной стороны, и "
     ),
-    "preamble_performer_label": "самозанятое лицо {full_name}",
+    # Самозанятый
+    "preamble_performer_label_self_employed_m": "самозанятый {full_name}",
+    "preamble_performer_label_self_employed_f": "самозанятая {full_name}",
+    # ГПХ
+    "preamble_performer_label_gph_m": "{full_name}",
+    "preamble_performer_label_gph_f": "{full_name}",
+    # Общий footer с плейсхолдером {gender_ending}
     "preamble_footer": (
-        ", именуемый в дальнейшем «Исполнитель», с другой стороны, совместно "
-        "именуемые «Стороны», составили настоящий Акт (далее — Акт) "
+        ", именуем{gender_ending} в дальнейшем «Исполнитель», с другой стороны, "
+        "совместно именуемые «Стороны», составили настоящий Акт (далее — Акт) "
         "о нижеследующем:"
     ),
     "contract_text": (
@@ -55,6 +62,19 @@ DEFAULT_ACT_TEXTS = {
     "total_label": (
         "Сумма вознаграждения, подлежащая уплате Исполнителю, "
         "за услуги, принятые по настоящему акту, составляет "
+    ),
+    "tax_ndfl": (
+        "в том числе налог на доходы физических лиц 13% — "
+        "в размере {ndfl_amount} рублей."
+    ),
+    "insurance_fees": (
+        "Указанное в настоящем пункте вознаграждение является объектом "
+        "обложения страховых взносов в размере единого тарифа 30%, "
+        "что составляет {insurance_amount} рублей 00 копеек."
+    ),
+    "insurance_responsibility": (
+        "Обязанности по исчислению и уплате в бюджет суммы страховых "
+        "взносов лежат на Заказчике."
     ),
     "payment_terms": (
         "Расчет по Договору производится путем перечисления Заказчиком "
@@ -121,10 +141,13 @@ class Database:
                     key TEXT PRIMARY KEY,
                     text TEXT NOT NULL);
             """)
+
+            # Миграция rehearsals: units
             columns = {row["name"] for row in db.execute("PRAGMA table_info(rehearsals)")}
             if "units" not in columns:
                 db.execute("ALTER TABLE rehearsals ADD COLUMN units INTEGER NOT NULL DEFAULT 1")
-                            # Миграция users: колонки status и gender
+
+            # Миграция users: status и gender
             user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
             if "status" not in user_columns:
                 db.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'self_employed'")

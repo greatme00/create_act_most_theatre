@@ -70,6 +70,10 @@ async def admin_users(message: Message, database: Database) -> None:
                 InlineKeyboardButton(text="📝 Договор", callback_data=f"adm:contract:{u['user_id']}"),
             ],
             [
+                InlineKeyboardButton(text="⚙️ Статус", callback_data=f"adm:status:{u['user_id']}"),
+                InlineKeyboardButton(text="⚧ Пол", callback_data=f"adm:gender:{u['user_id']}"),
+            ],
+            [
                 InlineKeyboardButton(text="📊 Подробнее", callback_data=f"adm:info:{u['user_id']}"),
                 InlineKeyboardButton(text="🗑 Удалить", callback_data=f"adm:del:{u['user_id']}"),
             ],
@@ -250,9 +254,16 @@ async def admin_cb_info(callback: CallbackQuery, database: Database) -> None:
         return
     stats = database.user_stats(uid)
     contract = user["contract_number"] or "—"
+    status_label = {
+        "self_employed": "Самозанятый",
+        "gph": "Физлицо по ГПХ",
+    }.get(user["status"] or "self_employed", "—")
+    gender_label = "Мужской" if (user["gender"] or "m") == "m" else "Женский"
     await callback.message.answer(
         f"👤 <b>{user['full_name']}</b>\n"
         f"ID: <code>{uid}</code>\n"
+        f"Статус: {status_label}\n"
+        f"Пол: {gender_label}\n"
         f"Договор: {contract}\n"
         f"Показов: {stats['shows']}\n"
         f"Репетиций: {stats['rehearsals']}",
@@ -296,6 +307,88 @@ async def admin_cb_confirm_delete(callback: CallbackQuery, database: Database) -
 async def admin_cb_cancel(callback: CallbackQuery) -> None:
     await callback.answer()
     await callback.message.edit_text("Отменено.")
+
+
+# ---------- Статус пользователя ----------
+
+@router.callback_query(F.data.startswith("adm:status:"))
+async def admin_cb_status(callback: CallbackQuery, database: Database) -> None:
+    if not database.is_admin_db(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    uid = int(callback.data.split(":")[2])
+    await callback.answer()
+    p = database.get_user(uid)
+    current = (p["status"] if p else None) or "—"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Самозанятый", callback_data=f"adm_set:status:{uid}:self_employed")],
+        [InlineKeyboardButton(text="Физлицо по ГПХ", callback_data=f"adm_set:status:{uid}:gph")],
+        [InlineKeyboardButton(text="← Отмена", callback_data="adm:cancel")],
+    ])
+    await callback.message.answer(
+        f"Текущий статус: <b>{current}</b>\nВыберите новый:",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+@router.callback_query(F.data.startswith("adm_set:status:"))
+async def admin_set_status(callback: CallbackQuery, database: Database) -> None:
+    if not database.is_admin_db(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    _, _, uid, status = callback.data.split(":")
+    uid = int(uid)
+    if database.set_user_status(uid, status):
+        label = "Самозанятый" if status == "self_employed" else "Физлицо по ГПХ"
+        await callback.answer("Обновлено", show_alert=True)
+        await callback.message.edit_text(
+            f"✅ Статус пользователя <code>{uid}</code>: <b>{label}</b>.",
+            parse_mode="HTML",
+        )
+    else:
+        await callback.answer("Не найден", show_alert=True)
+
+
+# ---------- Пол пользователя ----------
+
+@router.callback_query(F.data.startswith("adm:gender:"))
+async def admin_cb_gender(callback: CallbackQuery, database: Database) -> None:
+    if not database.is_admin_db(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    uid = int(callback.data.split(":")[2])
+    await callback.answer()
+    p = database.get_user(uid)
+    current = (p["gender"] if p else None) or "—"
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Мужской", callback_data=f"adm_set:gender:{uid}:m")],
+        [InlineKeyboardButton(text="Женский", callback_data=f"adm_set:gender:{uid}:f")],
+        [InlineKeyboardButton(text="← Отмена", callback_data="adm:cancel")],
+    ])
+    await callback.message.answer(
+        f"Текущий пол: <b>{current}</b>\nВыберите новый:",
+        parse_mode="HTML",
+        reply_markup=keyboard,
+    )
+
+
+@router.callback_query(F.data.startswith("adm_set:gender:"))
+async def admin_set_gender(callback: CallbackQuery, database: Database) -> None:
+    if not database.is_admin_db(callback.from_user.id):
+        await callback.answer("Нет доступа", show_alert=True)
+        return
+    _, _, uid, gender = callback.data.split(":")
+    uid = int(uid)
+    if database.set_user_gender(uid, gender):
+        label = "Мужской" if gender == "m" else "Женский"
+        await callback.answer("Обновлено", show_alert=True)
+        await callback.message.edit_text(
+            f"✅ Пол пользователя <code>{uid}</code>: <b>{label}</b>.",
+            parse_mode="HTML",
+        )
+    else:
+        await callback.answer("Не найден", show_alert=True)
 
 
 # ---------- Ввод значений от админа ----------

@@ -39,3 +39,33 @@ def rehearsal_units(start: str | None, end: str | None) -> int:
 def friendly_day(value: str) -> str:
     """'2026-09-30' → '30.09.2026'."""
     return datetime.strptime(value, "%Y-%m-%d").strftime("%d.%m.%Y")
+
+def detect_gender(full_name: str) -> str:
+    """Определяет пол по ФИО. Возвращает 'm' или 'f'.
+
+    Логика:
+    - Если ФИО из 3 частей — берём отчество (3-й элемент).
+      Отчество на «-овна», «-евна», «-ична», «-инична» → женский.
+    - Если из 2 частей — берём имя (2-й элемент).
+      Имя на «-а», «-я», «-ия», «-ья» → женский.
+    - Иначе — по умолчанию 'm'.
+    """
+    parts = full_name.strip().split()
+    if len(parts) < 2:
+        return "m"
+
+    # Если есть отчество (3 части: Фамилия Имя Отчество)
+    if len(parts) >= 3:
+        middle = parts[2].lower()
+        female_suffixes = ("овна", "евна", "ична", "инична", "ична")
+        if any(middle.endswith(suf) for suf in female_suffixes):
+            return "f"
+        # Отчество явно мужское (на «-ович», «-евич», «-ич»)
+        if middle.endswith(("ович", "евич", "ич")):
+            return "m"
+
+    # Если 2 части (Фамилия Имя) или отчество не распознано — по имени
+    first = parts[1].lower()
+    if first.endswith(("а", "я", "ия", "ья")):
+        return "f"
+    return "m"

@@ -14,9 +14,9 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [InlineKeyboardButton(text="📅 Мой месяц", callback_data="month:menu")],
         [InlineKeyboardButton(text="📄 Скачать акт", callback_data="act:current")],
         [InlineKeyboardButton(text="💳 Мои цены", callback_data="prices")],
+        [InlineKeyboardButton(text="👤 Мой профиль", callback_data="profile")],
         [InlineKeyboardButton(text="ℹ️ Помощь", callback_data="help")],
     ])
-
 
 def month_keyboard(action: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[

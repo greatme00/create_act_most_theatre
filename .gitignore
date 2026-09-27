@@ -21,3 +21,5 @@ Thumbs.db
 *.log
 
 bot_original_backup.py
+
+.env.local

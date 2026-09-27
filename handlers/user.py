@@ -5,7 +5,12 @@ from datetime import date
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from database import Database
 from keyboards import (
@@ -14,7 +19,7 @@ from keyboards import (
     minute_keyboard,
     show_category_keyboard,
 )
-from utils import friendly_day, parse_time, rehearsal_units
+from utils import detect_gender, friendly_day, parse_time, rehearsal_units
 
 
 router = Router()
@@ -24,6 +29,8 @@ router = Router()
 
 class ProfileForm(StatesGroup):
     full_name = State()
+    status = State()
+    gender = State()
     contract_number = State()
 
 
@@ -45,11 +52,54 @@ class AddRehearsal(StatesGroup):
 async def profile_name(message: Message, state: FSMContext) -> None:
     name = message.text.strip()
     if len(name.split()) < 2:
-        await message.answer("Нужно написать ФИО полностью. Жду.")
+        await message.answer("Нужно как минимум имя и фамилия. Напишите ФИО полностью.")
         return
     await state.update_data(full_name=name)
+    await state.set_state(ProfileForm.status)
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="Самозанятый", callback_data="reg_status:self_employed")],
+        [InlineKeyboardButton(text="Физлицо по ГПХ", callback_data="reg_status:gph")],
+    ])
+    await message.answer("Выберите ваш статус:", reply_markup=keyboard)
+
+
+@router.callback_query(ProfileForm.status, F.data.startswith("reg_status:"))
+async def profile_status(callback: CallbackQuery, state: FSMContext) -> None:
+    status = callback.data.split(":")[1]
+    await callback.answer()
+    await state.update_data(status=status)
+    await state.set_state(ProfileForm.gender)
+
+    data = await state.get_data()
+    detected = detect_gender(data["full_name"])
+
+    if detected == "f":
+        question = "Ваш пол женский? Я угадал? 🤔"
+        yes_cb = "reg_gender:f"
+        no_cb = "reg_gender:m"
+        no_label = "❌ Нет, я мужчина"
+    else:
+        question = "Ваш пол мужской? Я угадал? 🤔"
+        yes_cb = "reg_gender:m"
+        no_cb = "reg_gender:f"
+        no_label = "❌ Нет, я девушка"
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="✅ Да", callback_data=yes_cb)],
+        [InlineKeyboardButton(text=no_label, callback_data=no_cb)],
+    ])
+    await callback.message.edit_text(question, reply_markup=keyboard)
+
+
+@router.callback_query(ProfileForm.gender, F.data.startswith("reg_gender:"))
+async def profile_gender(callback: CallbackQuery, state: FSMContext) -> None:
+    gender = callback.data.split(":")[1]
+    await callback.answer()
+    await state.update_data(gender=gender)
     await state.set_state(ProfileForm.contract_number)
-    await message.answer("Введите номер договора. Если его пока нет — отправьте минус: -")
+    await callback.message.edit_text(
+        "Введите номер договора. Если его пока нет — отправьте минус: -"
+    )
 
 
 @router.message(ProfileForm.contract_number, F.text)
@@ -57,9 +107,18 @@ async def profile_contract(message: Message, state: FSMContext, database: Databa
     from handlers.common import show_menu
     data = await state.get_data()
     contract = None if message.text.strip() == "-" else message.text.strip()
-    database.save_profile(message.from_user.id, data["full_name"], contract)
+    database.save_profile(
+        message.from_user.id,
+        data["full_name"],
+        contract,
+        status=data.get("status", "self_employed"),
+        gender=data.get("gender", "m"),
+    )
     await state.clear()
-    await show_menu(message, "✅ Профиль сохранён. Номер договора можно будет добавить или изменить позже.")
+    await show_menu(
+        message,
+        "✅ Профиль сохранён. Номер договора можно будет добавить или изменить позже.",
+    )
 
 
 # ---------- Добавить спектакль ----------
@@ -87,7 +146,9 @@ async def save_show_title(message: Message, state: FSMContext, database: Databas
 
 
 @router.callback_query(F.data.startswith("category:"))
-async def save_show_category(callback: CallbackQuery, state: FSMContext, database: Database) -> None:
+async def save_show_category(
+    callback: CallbackQuery, state: FSMContext, database: Database
+) -> None:
     from config import SHOW_CATEGORIES
     index = int(callback.data.split(":")[1])
     if index < 0 or index >= len(SHOW_CATEGORIES):
@@ -159,7 +220,11 @@ async def calendar_day(callback: CallbackQuery, state: FSMContext, database: Dat
 
 
 async def ask_for_time(message: Message, kind: str) -> None:
-    label = {"start": "начала репетиции", "end": "окончания репетиции", "show": "начала спектакля"}[kind]
+    label = {
+        "start": "начала репетиции",
+        "end": "окончания репетиции",
+        "show": "начала спектакля",
+    }[kind]
     await message.answer(f"Выберите час {label}:", reply_markup=hour_keyboard(kind))
 
 

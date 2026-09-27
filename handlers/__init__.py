@@ -2,7 +2,16 @@
 
 from aiogram import Router
 
-from handlers import common, user, prices, month, admin, broadcast, fallback
+from handlers import (
+    common,
+    user,
+    prices,
+    month,
+    admin,
+    broadcast,
+    profile,
+    fallback,
+)
 
 
 def get_main_router() -> Router:
@@ -18,5 +27,6 @@ def get_main_router() -> Router:
     main.include_router(month.router)
     main.include_router(admin.router)
     main.include_router(broadcast.router)
+    main.include_router(profile.router)
     main.include_router(fallback.router)
     return main
