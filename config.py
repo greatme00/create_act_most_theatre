@@ -35,3 +35,31 @@ SUPER_ADMIN_IDS = {
 
 def is_super_admin(user_id: int) -> bool:
     return user_id in SUPER_ADMIN_IDS
+
+# ---------- Короткие названия категорий (для кнопок) ----------
+CATEGORY_SHORT = {
+    "Главная роль": "гл. роль",
+    "Роль первого плана": "1й план",
+    "Роль второго плана": "2й план",
+    "Массовка": "масс",
+}
+
+
+def short_category(category: str) -> str:
+    """Короткое название категории для кнопок. Если нет маппинга — вернёт как есть."""
+    return CATEGORY_SHORT.get(category, category)
+
+# ---------- Настройки отображения кнопок ----------
+SHOW_TITLE_MAX = 13          # обрезать название спектакля
+REHEARSAL_TITLE_MAX = 13     # обрезать название репетиции
+BUTTON_MAX_LENGTH = 60       # максимальная длина текста кнопки (Telegram)
+
+EMOJI_SHOW = "🎭"
+EMOJI_REHEARSAL = "🎬"
+
+
+def truncate(text: str, limit: int) -> str:
+    """Обрезает текст до limit символов, добавляя …"""
+    if len(text) <= limit:
+        return text
+    return text[:limit] + "…"
