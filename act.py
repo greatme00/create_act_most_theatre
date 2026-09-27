@@ -87,10 +87,24 @@ def rubles_in_words(amount: float) -> str:
 
 # ---------- Вспомогательные ----------
 
-def _performer_label_key(status: str, gender: str) -> str:
+def _profile_key_prefix(status: str) -> str:
+    """Префикс ключа для специфичных блоков профиля."""
     status = status or "self_employed"
+    return status if status in ("self_employed", "gph") else "self_employed"
+
+
+def _performer_label_key(status: str, gender: str) -> str:
+    """Полный ключ для блока преамбулы про исполнителя."""
+    prefix = _profile_key_prefix(status)
     gender = gender or "m"
-    return f"preamble_performer_label_{status}_{gender}"
+    return f"{prefix}.preamble_performer_label_{gender}"
+
+
+def _signature_performer_label_key(status: str, gender: str) -> str:
+    """Полный ключ для блока подписи исполнителя."""
+    prefix = _profile_key_prefix(status)
+    gender = gender or "m"
+    return f"{prefix}.signature_performer_label_{gender}"
 
 
 def _gender_ending(gender: str) -> str:
@@ -157,11 +171,17 @@ def make_act(user_id: int, month: str, database) -> Path:
     }
 
     def t(key: str) -> str:
+        """Возвращает текст по полному ключу (с префиксом common./self_employed./gph.)."""
         raw = texts.get(key, "")
         try:
             return raw.format(**fmt)
         except (KeyError, IndexError):
             return raw
+
+    def t_profile(base_key: str) -> str:
+        """Возвращает текст по ключу с префиксом текущего профиля."""
+        prefix = _profile_key_prefix(status)
+        return t(f"{prefix}.{base_key}")
 
     grouped: dict[tuple, dict] = {}
     for row in shows:
@@ -230,7 +250,7 @@ def make_act(user_id: int, month: str, database) -> Path:
     p_date.paragraph_format.space_before = Pt(6)
     p_date.paragraph_format.space_after = Pt(6)
     p_date.paragraph_format.tab_stops.add_tab_stop(content_width, WD_TAB_ALIGNMENT.RIGHT)
-    r_city = p_date.add_run(t("header_city"))
+    r_city = p_date.add_run(t("common.header_city"))
     r_city.font.name = "Times New Roman"
     r_city.font.size = Pt(BODY_PT)
     p_date.add_run("\t")
@@ -244,18 +264,18 @@ def make_act(user_id: int, month: str, database) -> Path:
     p.paragraph_format.space_after = Pt(4)
     p.paragraph_format.space_before = Pt(4)
 
-    r = p.add_run(t("preamble_theater"))
+    r = p.add_run(t("common.preamble_theater"))
     r.bold = True
     r.font.name = "Times New Roman"
     r.font.size = Pt(BODY_PT)
-    r2 = p.add_run(t("preamble_position"))
+    r2 = p.add_run(t("common.preamble_position"))
     r2.font.name = "Times New Roman"
     r2.font.size = Pt(BODY_PT)
     r = p.add_run(t(_performer_label_key(status, gender)))
     r.bold = True
     r.font.name = "Times New Roman"
     r.font.size = Pt(BODY_PT)
-    r3 = p.add_run(t("preamble_footer"))
+    r3 = p.add_run(t("common.preamble_footer"))
     r3.font.name = "Times New Roman"
     r3.font.size = Pt(BODY_PT)
 
@@ -266,13 +286,13 @@ def make_act(user_id: int, month: str, database) -> Path:
     p.paragraph_format.space_before = Pt(0)
 
     if contract_number:
-        r = p.add_run(t("contract_text"))
+        r = p.add_run(t("common.contract_text"))
     else:
-        r = p.add_run(t("contract_text_empty"))
+        r = p.add_run(t("common.contract_text_empty"))
     r.font.name = "Times New Roman"
     r.font.size = Pt(BODY_PT)
 
-    _p(t("period_text"), space_after=8, space_before=2)
+    _p(t("common.period_text"), space_after=8, space_before=2)
 
     headers = ("№ п/п", "Наименование услуг", "Наименование спектакля",
                "Артистическая роль/ Вокал", "Цена за единицу, руб.",
@@ -294,13 +314,11 @@ def make_act(user_id: int, month: str, database) -> Path:
     tblPr.append(tblW)
 
     tblCellMar = OxmlElement("w:tblCellMar")
-    tblCellMar = OxmlElement("w:tblCellMar")
     for m_name, m_val in (("top", "40"), ("left", "103"), ("bottom", "40"), ("right", "103")):
         node = OxmlElement(f"w:{m_name}")
         node.set(qn("w:w"), m_val)
         node.set(qn("w:type"), "dxa")
         tblCellMar.append(node)
-    tblPr.append(tblCellMar)
     tblPr.append(tblCellMar)
 
     col_widths_dxa = [492, 2093, 2812, 1540, 980, 796, 892]
@@ -322,7 +340,6 @@ def make_act(user_id: int, month: str, database) -> Path:
         p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
-        # убираем пустые строки сверху/снизу из текста БД
         lines = [ln for ln in str(text).strip().split("\n")]
         for i, line in enumerate(lines):
             if i > 0:
@@ -367,7 +384,7 @@ def make_act(user_id: int, month: str, database) -> Path:
 
         values = (
             row_number,
-            t("service_show"),
+            t("common.service_show"),
             f"«{group['title']}»\n{dates_text}",
             group["role"],
             _format_money(price),
@@ -391,8 +408,8 @@ def make_act(user_id: int, month: str, database) -> Path:
         dates_text = ", ".join(friendly_day(d) for d in days_sorted)
         values = (
             row_number,
-            t("service_rehearsal"),
-            f"{t('rehearsal_theater')}\n{dates_text}",
+            t("common.service_rehearsal"),
+            f"{t('common.rehearsal_theater')}\n{dates_text}",
             "",
             _format_money(rehearsal_price),
             units,
@@ -418,13 +435,13 @@ def make_act(user_id: int, month: str, database) -> Path:
 
     _p("", indent=Cm(0), space_after=6)
 
-    _p(t("obligations"), space_after=4)
+    _p(t("common.obligations"), space_after=4)
 
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
     p.paragraph_format.first_line_indent = Cm(1.0)
     p.paragraph_format.space_after = Pt(4)
-    r0 = p.add_run(t("total_label"))
+    r0 = p.add_run(t("common.total_label"))
     r0.font.name = "Times New Roman"
     r0.font.size = Pt(BODY_PT)
     r = p.add_run(rubles_in_words(total))
@@ -438,19 +455,17 @@ def make_act(user_id: int, month: str, database) -> Path:
     if status == "gph":
         ndfl_amount = round(total * 0.13, 2)
         insurance_amount = round(total * 0.30, 2)
-        ndfl_text = t("tax_ndfl").format(ndfl_amount=_format_money(ndfl_amount))
-        insurance_text = t("insurance_fees").format(insurance_amount=_format_money(insurance_amount))
+        ndfl_text = t_profile("tax_ndfl").format(ndfl_amount=_format_money(ndfl_amount))
+        insurance_text = t_profile("insurance_fees").format(insurance_amount=_format_money(insurance_amount))
         _p(ndfl_text, space_after=4)
         _p(insurance_text, space_after=4)
-        _p(t("insurance_responsibility"), space_after=4)
+        _p(t_profile("insurance_responsibility"), space_after=4)
 
-    _p(t("payment_terms"), space_after=4)
-    _p(t("copies_text"), space_after=8)
+    _p(t("common.payment_terms"), space_after=4)
+    _p(t("common.copies_text"), space_after=8)
 
-    # ---------- Подписи 
-
-        # ---------- Подписи: левый у левого края, правый у правого ----------
-    full = Cm(16.5)  # ширина рабочей области
+    # ---------- Подписи ----------
+    full = Cm(16.5)
 
     def _sign_line(left_text: str, right_text: str = ""):
         p = doc.add_paragraph()
@@ -461,12 +476,11 @@ def make_act(user_id: int, month: str, database) -> Path:
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.space_after = Pt(0)
         p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
-        # RIGHT-tab на правом краю — правый текст прижмётся вправо
         p.paragraph_format.tab_stops.add_tab_stop(full, WD_TAB_ALIGNMENT.RIGHT)
         pPr = p._p.get_or_add_pPr()
         for old in pPr.findall(qn("w:ind")):
             pPr.remove(old)
-        r1 = p.add_run(left_text)
+        r1 = p.add_run(left_text or "")
         r1.font.name = "Times New Roman"
         r1.font.size = Pt(BODY_PT)
         if right_text:
@@ -485,20 +499,22 @@ def make_act(user_id: int, month: str, database) -> Path:
                     return part
         return s
 
-    cust_fio = _extract_fio(t("signature_customer_name")) or "А.А. Черепнев"
-    perf_fio = _extract_fio(t("signature_performer_name")) or sign_name
+    cust_fio = _extract_fio(t("common.signature_customer_name")) or "А.А. Черепнев"
+    perf_fio = _extract_fio(t("common.signature_performer_name")) or sign_name
 
-    cust_title = (t("signature_customer_title") or "Заказчик:").strip()
-    perf_title = (t("signature_performer_title") or "Исполнитель:").strip()
-    cust_pos = (t("signature_customer_position") or "Директор").strip()
-    mp = (t("signature_mp") or "М.П.").strip()
+    cust_title = (t("common.signature_customer_title") or "Заказчик:").strip()
+    perf_title = (t("common.signature_performer_title") or "Исполнитель:").strip()
+    cust_pos = (t("common.signature_customer_position") or "Директор").strip()
+
+    perf_label = t(_signature_performer_label_key(status, gender)).strip()
 
     line_cust = f"___________________ /{cust_fio}/"
     line_perf = f"___________________ /{perf_fio}/"
     line_date = f"«____» ___________________ {year} г."
+    mp = "М.П."
 
     _sign_line(cust_title, perf_title)
-    _sign_line(cust_pos, "")
+    _sign_line(cust_pos, perf_label)
     _sign_line(line_cust, line_perf)
     _sign_line("", "")
     _sign_line(line_date, line_date)

@@ -11,90 +11,103 @@ from config import SUPER_ADMIN_IDS
 # ---------- Тексты по умолчанию для акта ----------
 # Плейсхолдеры: {full_name}, {sign_name}, {contract_number}, {period},
 #               {month}, {year}, {gender_ending}, {ndfl_amount}, {insurance_amount}
+# ---------- Тексты по умолчанию для акта ----------
+# Ключи с префиксами:
+#   common.*         — общие блоки (одинаковые для всех)
+#   self_employed.*  — только для самозанятых
+#   gph.*            — только для ГПХ
+#
+# Плейсхолдеры: {full_name}, {sign_name}, {contract_number}, {period},
+#               {month}, {year}, {gender_ending},
+#               {ndfl_amount}, {insurance_amount}
+
 DEFAULT_ACT_TEXTS = {
-    "header_city": "г. Москва",
-    "preamble_theater": (
+    # ---------- Общие ----------
+    "common.header_city": "г. Москва",
+    "common.preamble_theater": (
         "Государственное бюджетное учреждение культуры города Москвы "
         "«Государственный академический театр имени Моссовета» "
         "(ГБУК г. Москвы «Театр им. Моссовета»)"
     ),
-    "preamble_position": (
+    "common.preamble_position": (
         ", именуемое в дальнейшем «Заказчик», в лице директора "
         "Черепнева Алексея Анатольевича, действующего на основании Устава, "
         "с одной стороны, и "
     ),
-    # Самозанятый
-    "preamble_performer_label_self_employed_m": "самозанятый {full_name}",
-    "preamble_performer_label_self_employed_f": "самозанятая {full_name}",
-    # ГПХ
-    "preamble_performer_label_gph_m": "{full_name}",
-    "preamble_performer_label_gph_f": "{full_name}",
-    # Общий footer с плейсхолдером {gender_ending}
-    "preamble_footer": (
+    "common.preamble_footer": (
         ", именуем{gender_ending} в дальнейшем «Исполнитель», с другой стороны, "
         "совместно именуемые «Стороны», составили настоящий Акт (далее — Акт) "
         "о нижеследующем:"
     ),
-    "contract_text": (
+    "common.contract_text": (
         "В соответствии с условиями Договора № {contract_number} "
         "(далее — Договор) Исполнителем оказаны услуги, а Заказчиком "
         "приняты услуги по исполнению роли/ей в составе организуемых "
         "Заказчиком театрально-зрелищных мероприятий (спектаклей)."
     ),
-    "contract_text_empty": (
+    "common.contract_text_empty": (
         "В соответствии с условиями Договора № ____ от __________ "
         "(далее — Договор) Исполнителем оказаны услуги, а Заказчиком "
         "приняты услуги по исполнению роли/ей в составе организуемых "
         "Заказчиком театрально-зрелищных мероприятий (спектаклей)."
     ),
-    "period_text": "За период {period} фактически оказаны услуги в следующем объеме:",
-    "service_show": "исполнение роли при проведении публичных показов спектакля",
-    "service_rehearsal": "участие в репетиции спектакля",
-    "rehearsal_theater": (
+    "common.period_text": "За период {period} фактически оказаны услуги в следующем объеме:",
+    "common.service_show": "исполнение роли при проведении публичных показов спектакля",
+    "common.service_rehearsal": "участие в репетиции спектакля",
+    "common.rehearsal_theater": (
         "Репертуарные спектакли структурного подразделения — "
         "Студия «МОСТ»"
     ),
-    "obligations": (
+    "common.obligations": (
         "Обязательства по договору выполнены Исполнителем в установленные "
         "сроки. Заказчик не имеет претензий к объему и качеству оказанных "
         "услуг."
     ),
-    "total_label": (
+    "common.total_label": (
         "Сумма вознаграждения, подлежащая уплате Исполнителю, "
         "за услуги, принятые по настоящему акту, составляет "
     ),
-    "tax_ndfl": (
-        "в том числе налог на доходы физических лиц 13% — "
-        "в размере {ndfl_amount} рублей."
-    ),
-    "insurance_fees": (
-        "Указанное в настоящем пункте вознаграждение является объектом "
-        "обложения страховых взносов в размере единого тарифа 30%, "
-        "что составляет {insurance_amount} рублей 00 копеек."
-    ),
-    "insurance_responsibility": (
-        "Обязанности по исчислению и уплате в бюджет суммы страховых "
-        "взносов лежат на Заказчике."
-    ),
-    "payment_terms": (
+    "common.payment_terms": (
         "Расчет по Договору производится путем перечисления Заказчиком "
         "денежных средств на банковский счет Исполнителя согласно "
         "реквизитам, указанным в Договоре, в течение 7 (Семи) рабочих дней "
         "со дня подписания Сторонами настоящего Акта."
     ),
-    "copies_text": (
+    "common.copies_text": (
         "Настоящий Акт составлен в 2 (двух) экземплярах, имеющих равную "
         "юридическую силу, по одному экземпляру для каждой из Сторон и "
         "является неотъемлемой частью Договора."
     ),
-    "signature_customer_title": "Заказчик:",
-    "signature_customer_position": "Директор",
-    "signature_customer_name": "______________ /А.А. Черепнев/",
-    "signature_performer_title": "Исполнитель:",
-    "signature_performer_label": "самозанятое лицо {full_name}",
-    "signature_performer_name": "______________ /{sign_name}/",
-    "signature_date": "«____» ______________ {year} г.",
-    "signature_mp": "М.П.",
+    "common.signature_customer_title": "Заказчик:",
+    "common.signature_customer_position": "Директор",
+    "common.signature_customer_name": "______________ /А.А. Черепнев/",
+    "common.signature_performer_title": "Исполнитель:",
+    "common.signature_performer_name": "______________ /{sign_name}/",
+
+    # ---------- Самозанятый ----------
+    "self_employed.preamble_performer_label_m": "самозанятый {full_name}",
+    "self_employed.preamble_performer_label_f": "самозанятая {full_name}",
+    "self_employed.signature_performer_label_m": "самозанятый {full_name}",
+    "self_employed.signature_performer_label_f": "самозанятая {full_name}",
+
+    # ---------- ГПХ ----------
+    "gph.preamble_performer_label_m": "{full_name}",
+    "gph.preamble_performer_label_f": "{full_name}",
+    "gph.signature_performer_label_m": "",
+    "gph.signature_performer_label_f": "",
+    "gph.tax_ndfl": (
+        "в том числе налог на доходы физических лиц 13% — "
+        "в размере {ndfl_amount} рублей."
+    ),
+    "gph.insurance_fees": (
+        "Указанное в настоящем пункте вознаграждение является объектом "
+        "обложения страховых взносов в размере единого тарифа 30%, "
+        "что составляет {insurance_amount} рублей 00 копеек."
+    ),
+    "gph.insurance_responsibility": (
+        "Обязанности по исчислению и уплате в бюджет суммы страховых "
+        "взносов лежат на Заказчике."
+    ),
 }
 
 

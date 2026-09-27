@@ -27,6 +27,8 @@ async def admin_menu(message: Message, database: Database) -> None:
         return
     text = (
         "🛠 <b>Админка</b>\n\n"
+        "<b>Текст акта:</b>\n"
+        "/edit_act — редактировать блоки акта\n\n"
         "<b>Пользователи:</b>\n"
         "/users — список всех пользователей\n"
         "/user [id] — подробно про пользователя\n"
