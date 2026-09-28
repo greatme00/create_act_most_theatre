@@ -36,7 +36,7 @@ async def start(message: Message, state: FSMContext, database: Database) -> None
 @router.message(Command("cancel"))
 async def cancel(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await show_menu(message, "Ладнр, ничего не сохранял.")
+    await show_menu(message, "Ладно, ничего не сохранял.")
 
 
 @router.callback_query(F.data == "menu")

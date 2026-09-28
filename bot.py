@@ -29,23 +29,26 @@ async def reminder_loop(bot: Bot, database: Database) -> None:
 
     timezone = ZoneInfo("Europe/Moscow")
     while True:
-        now = datetime.now(timezone)
-        if now.hour >= 10:
-            tomorrow = date.fromordinal(now.date().toordinal() + 1).isoformat()
-            for event in database.events_for_day(tomorrow):
-                if database.reminder_was_sent(event["type"], event["id"], now.date().isoformat()):
-                    continue
-                event_name = "спектакль" if event["type"] == "show" else "репетиция"
-                time_text = f" в {event['time']}" if event["time"] else ""
-                try:
-                    await bot.send_message(
-                        event["user_id"],
-                        f"🔔 Напоминание: завтра{time_text} {event_name} «{event['title']}».",
-                    )
-                except Exception:
-                    logging.exception("Could not send reminder to user %s", event["user_id"])
-                else:
-                    database.mark_reminder_sent(event["type"], event["id"], now.date().isoformat())
+        try:
+            now = datetime.now(timezone)
+            if now.hour >= 10:
+                tomorrow = date.fromordinal(now.date().toordinal() + 1).isoformat()
+                for event in database.events_for_day(tomorrow):
+                    if database.reminder_was_sent(event["type"], event["id"], now.date().isoformat()):
+                        continue
+                    event_name = "спектакль" if event["type"] == "show" else "репетиция"
+                    time_text = f" в {event['time']}" if event["time"] else ""
+                    try:
+                        await bot.send_message(
+                            event["user_id"],
+                            f"🔔 Напоминание: завтра{time_text} {event_name} «{event['title']}».",
+                        )
+                    except Exception:
+                        logging.exception("Could not send reminder to user %s", event["user_id"])
+                    else:
+                        database.mark_reminder_sent(event["type"], event["id"], now.date().isoformat())
+        except Exception:
+            logging.exception("Ошибка в reminder_loop")
         await asyncio.sleep(600)
 
 

@@ -57,7 +57,7 @@ def detect_gender(full_name: str) -> str:
     # Если есть отчество (3 части: Фамилия Имя Отчество)
     if len(parts) >= 3:
         middle = parts[2].lower()
-        female_suffixes = ("овна", "евна", "ична", "инична", "ична")
+        female_suffixes = ("овна", "евна", "ична", "инична")
         if any(middle.endswith(suf) for suf in female_suffixes):
             return "f"
         # Отчество явно мужское (на «-ович», «-евич», «-ич»)

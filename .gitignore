@@ -23,3 +23,7 @@ Thumbs.db
 bot_original_backup.py
 
 .env.local
+data_test.sqlite3
+data_before_migration.sqlite3
+data_BEFORE_*.sqlite3
+data_*.sqlite3

@@ -1,7 +1,7 @@
 """Хендлеры: «Мой месяц», просмотр записей, удаление, скачивание акта."""
 
 from datetime import datetime
-
+import asyncio
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -170,7 +170,7 @@ async def act_current(callback: CallbackQuery, database: Database) -> None:
 
 
 async def send_act(message: Message, user_id: int, month: str, database: Database) -> None:
-    path = make_act(user_id, month, database)
+    path = await asyncio.to_thread(make_act, user_id, month, database)
     await message.answer_document(
         FSInputFile(path),
         caption=f"Готово. Акт за {month}.",

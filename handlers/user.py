@@ -210,7 +210,6 @@ async def calendar_day(callback: CallbackQuery, state: FSMContext, database: Dat
     if flow == "show":
         await state.update_data(day=chosen_day)
         await state.set_state(AddShow.time)
-        await callback.message.answer("Выберите время начала спектакля.")
         await ask_for_time(callback.message, "show")
         return
     if flow == "rehearsal":

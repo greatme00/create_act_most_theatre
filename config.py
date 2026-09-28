@@ -64,3 +64,5 @@ def truncate(text: str, limit: int) -> str:
     if len(text) <= limit:
         return text
     return text[:limit] + "…"
+
+ACT_BODY_FONT_PT = 8  # размер шрифта основного текста акта

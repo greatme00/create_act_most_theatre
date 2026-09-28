@@ -1,6 +1,7 @@
 """Работа с базой данных SQLite."""
 
 import sqlite3
+import logging
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
@@ -115,9 +116,20 @@ class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
 
+    _VALID_STATUSES = ("self_employed", "gph")
+    _VALID_GENDERS = ("m", "f")
+    _ALLOWED_TABLES = {"shows": "shows", "rehearsals": "rehearsals"}
+
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(
+            self.path,
+            timeout=30.0,
+            check_same_thread=False,
+        )
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
     def initialize(self) -> None:
@@ -125,7 +137,7 @@ class Database:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS shows (
                     id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
-                    title TEXT NOT NULL, role TEXT NOT NULL, category TEXT,
+                    title TEXT NOT NULL, category TEXT,
                     price INTEGER, day TEXT NOT NULL, show_time TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS rehearsals (
                     id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
@@ -156,14 +168,34 @@ class Database:
                 CREATE TABLE IF NOT EXISTS user_settings (
                     user_id INTEGER PRIMARY KEY,
                     quotes_subscribed INTEGER NOT NULL DEFAULT 1);
+                CREATE TABLE IF NOT EXISTS bot_state (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL);
             """)
 
-            # Миграция rehearsals: units
+            # ---------- МИГРАЦИЯ: удаляем колонку role из shows ----------
+            show_columns = {row["name"] for row in db.execute("PRAGMA table_info(shows)")}
+            if "role" in show_columns:
+                logging.info("Миграция: удаляю колонку role из shows")
+                db.executescript("""
+                    CREATE TABLE shows_new (
+                        id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL,
+                        title TEXT NOT NULL, category TEXT,
+                        price INTEGER, day TEXT NOT NULL, show_time TEXT NOT NULL);
+                    INSERT INTO shows_new (id, user_id, title, category, price, day, show_time)
+                        SELECT id, user_id, title, category, price, day, show_time FROM shows;
+                    DROP TABLE shows;
+                    ALTER TABLE shows_new RENAME TO shows;
+                    CREATE INDEX IF NOT EXISTS shows_by_user_day ON shows(user_id, day);
+                """)
+                logging.info("Миграция: колонка role удалена")
+
+            # ---------- Миграция rehearsals: units ----------
             columns = {row["name"] for row in db.execute("PRAGMA table_info(rehearsals)")}
             if "units" not in columns:
                 db.execute("ALTER TABLE rehearsals ADD COLUMN units INTEGER NOT NULL DEFAULT 1")
 
-            # Миграция users: status и gender
+            # ---------- Миграция users: status и gender ----------
             user_columns = {row["name"] for row in db.execute("PRAGMA table_info(users)")}
             if "status" not in user_columns:
                 db.execute("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'self_employed'")
@@ -206,6 +238,7 @@ class Database:
         with closing(self.connect()) as db:
             return db.execute("SELECT * FROM users WHERE user_id = ?", (user_id,)).fetchone()
 
+
     def save_profile(
         self,
         user_id: int,
@@ -214,6 +247,10 @@ class Database:
         status: str = "self_employed",
         gender: str = "m",
     ) -> None:
+        if status not in self._VALID_STATUSES:
+            raise ValueError(f"Invalid status: {status}")
+        if gender not in self._VALID_GENDERS:
+            raise ValueError(f"Invalid gender: {gender}")
         with closing(self.connect()) as db, db:
             db.execute(
                 """INSERT OR REPLACE INTO users
@@ -245,9 +282,9 @@ class Database:
         price = self.prices(user_id)[data["category"]]
         with closing(self.connect()) as db, db:
             db.execute(
-                """INSERT INTO shows (user_id, title, role, category, price, day, show_time)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (user_id, data["title"], data["category"], data["category"],
+                """INSERT INTO shows (user_id, title, category, price, day, show_time)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (user_id, data["title"], data["category"],
                  price, data["day"], data.get("time", "")),
             )
 
@@ -273,12 +310,14 @@ class Database:
 
     # ----- выборки -----
 
+
     def month_rows(self, table: str, user_id: int, month: str) -> list[sqlite3.Row]:
-        if table not in {"shows", "rehearsals"}:
-            raise ValueError("Unknown table")
+        if table not in self._ALLOWED_TABLES:
+            raise ValueError(f"Unknown table: {table}")
+        safe_table = self._ALLOWED_TABLES[table]
         with closing(self.connect()) as db:
             return db.execute(
-                f"SELECT * FROM {table} WHERE user_id = ? AND day LIKE ? ORDER BY day, id",
+                f"SELECT * FROM {safe_table} WHERE user_id = ? AND day LIKE ? ORDER BY day, id",
                 (user_id, f"{month}-%"),
             ).fetchall()
 
@@ -305,14 +344,14 @@ class Database:
             )
 
     def delete(self, table: str, record_id: int, user_id: int) -> bool:
-        if table not in {"shows", "rehearsals"}:
+        if table not in self._ALLOWED_TABLES:
             return False
+        safe_table = self._ALLOWED_TABLES[table]
         with closing(self.connect()) as db, db:
             return db.execute(
-                f"DELETE FROM {table} WHERE id = ? AND user_id = ?",
+                f"DELETE FROM {safe_table} WHERE id = ? AND user_id = ?",
                 (record_id, user_id),
             ).rowcount > 0
-
     # ----- админские методы -----
 
     def list_users(self) -> list[sqlite3.Row]:
@@ -336,6 +375,8 @@ class Database:
             db.execute("DELETE FROM shows WHERE user_id = ?", (user_id,))
             db.execute("DELETE FROM rehearsals WHERE user_id = ?", (user_id,))
             db.execute("DELETE FROM user_prices WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM user_settings WHERE user_id = ?", (user_id,))
+            db.execute("DELETE FROM admins WHERE user_id = ?", (user_id,))
             cur = db.execute("DELETE FROM users WHERE user_id = ?", (user_id,))
             return cur.rowcount > 0
 
@@ -354,6 +395,8 @@ class Database:
             ).rowcount > 0
 
     def set_user_status(self, user_id: int, status: str) -> bool:
+        if status not in self._VALID_STATUSES:
+            raise ValueError(f"Invalid status: {status}")
         with closing(self.connect()) as db, db:
             return db.execute(
                 "UPDATE users SET status = ? WHERE user_id = ?",
@@ -361,6 +404,8 @@ class Database:
             ).rowcount > 0
 
     def set_user_gender(self, user_id: int, gender: str) -> bool:
+        if gender not in self._VALID_GENDERS:
+            raise ValueError(f"Invalid gender: {gender}")
         with closing(self.connect()) as db, db:
             return db.execute(
                 "UPDATE users SET gender = ? WHERE user_id = ?",

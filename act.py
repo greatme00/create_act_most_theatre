@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
+from config import ACT_BODY_FONT_PT as BODY_PT
 from config import ACTS_DIR
 from utils import friendly_day
 
@@ -139,7 +140,6 @@ def make_act(user_id: int, month: str, database) -> Path:
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
 
-    BODY_PT = 8
 
     shows = database.month_rows("shows", user_id, month)
     rehearsals = database.month_rows("rehearsals", user_id, month)
@@ -189,7 +189,7 @@ def make_act(user_id: int, month: str, database) -> Path:
         key = (row["title"], category)
         grouped.setdefault(key, {
             "title": row["title"],
-            "role": category,
+            "category": category,
             "price": float(user_prices.get(category, row["price"] or 0)),
             "days": [],
             "times": [],
@@ -386,7 +386,7 @@ def make_act(user_id: int, month: str, database) -> Path:
             row_number,
             t("common.service_show"),
             f"«{group['title']}»\n{dates_text}",
-            group["role"],
+            group["category"],
             _format_money(price),
             count,
             _format_money(summa),
