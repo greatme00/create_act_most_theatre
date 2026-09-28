@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardButton, InlineKeyboardMarkup, Message
 
-from config import SUPER_ADMIN_IDS
+from config import SUPER_ADMIN_IDS, is_super_admin
 from database import Database
 
 
@@ -35,6 +35,15 @@ async def admin_menu(message: Message, database: Database) -> None:
         "/del_user [id] — удалить пользователя\n"
         "/set_name [id] [ФИО] — изменить ФИО\n"
         "/set_contract [id] [номер] — изменить договор\n\n"
+    )
+
+    if is_super_admin(message.from_user.id):
+        text += (
+            "<b>Аналитика:</b>\n"
+            "/activity — активность пользователей за 7 дней\n\n"
+        )
+
+    text += (
         "<b>Администраторы:</b>\n"
         "/admins — список админов\n"
         "/add_admin [id] — добавить админа\n"
@@ -42,6 +51,8 @@ async def admin_menu(message: Message, database: Database) -> None:
         "<b>Рассылка:</b>\n"
         "/broadcast — отправить сообщение всем пользователям\n"
     )
+
+    await message.answer(text, parse_mode="HTML")
     await message.answer(text, parse_mode="HTML")
 
 
@@ -434,3 +445,53 @@ async def admin_input_contract(message: Message, state: FSMContext, database: Da
     else:
         await state.clear()
         await message.answer(f"Пользователь <code>{uid}</code> не найден.", parse_mode="HTML")
+
+
+@router.message(Command("activity"))
+async def admin_activity(message: Message, database: Database) -> None:
+    """Активность пользователей — только для супер-админа."""
+    if not is_super_admin(message.from_user.id):
+        await message.answer("Нет доступа. Команда только для супер-админа.")
+        return
+
+    users = database.list_activity_all_users(days=7)
+    if not users:
+        await message.answer("Пользователей нет.")
+        return
+
+    from datetime import datetime
+    now = datetime.now()
+
+    lines = ["📊 <b>Активность пользователей</b>", "<i>за последние 7 дней</i>\n"]
+
+    for u in users:
+        last = u["last_seen"]
+        cnt = u["cnt"]
+
+        if last:
+            try:
+                last_dt = datetime.fromisoformat(last)
+                delta = now - last_dt
+                if delta.days == 0:
+                    if delta.seconds < 3600:
+                        last_text = f"{delta.seconds // 60} мин назад"
+                    else:
+                        last_text = f"{delta.seconds // 3600} ч назад"
+                elif delta.days == 1:
+                    last_text = "вчера"
+                elif delta.days < 7:
+                    last_text = f"{delta.days} дн назад"
+                else:
+                    last_text = last[:16].replace("T", " ")
+            except Exception:
+                last_text = last[:16].replace("T", " ")
+        else:
+            last_text = "—"
+
+        lines.append(
+            f"• <b>{u['full_name']}</b> (<code>{u['user_id']}</code>)\n"
+            f"  последняя активность: {last_text}\n"
+            f"  действий за 7 дней: <b>{cnt}</b>"
+        )
+
+    await message.answer("\n".join(lines), parse_mode="HTML")

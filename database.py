@@ -171,6 +171,13 @@ class Database:
                 CREATE TABLE IF NOT EXISTS bot_state (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS user_activity (
+                    id INTEGER PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    action TEXT NOT NULL,
+                    created_at TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS user_activity_by_user
+                    ON user_activity(user_id, created_at);
             """)
 
             # ---------- МИГРАЦИЯ: удаляем колонку role из shows ----------
@@ -455,6 +462,68 @@ class Database:
         with closing(self.connect()) as db:
             rows = db.execute("SELECT user_id FROM users").fetchall()
         return [row["user_id"] for row in rows]
+
+        # ----- активность пользователей -----
+
+    def log_activity(self, user_id: int, action: str) -> None:
+        with closing(self.connect()) as db, db:
+            db.execute(
+                "INSERT INTO user_activity(user_id, action, created_at) VALUES (?, ?, ?)",
+                (user_id, action, datetime.now().isoformat(timespec="seconds")),
+            )
+
+    def last_activity(self, user_id: int) -> str | None:
+        with closing(self.connect()) as db:
+            row = db.execute(
+                "SELECT created_at FROM user_activity WHERE user_id = ? ORDER BY created_at DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        return row["created_at"] if row else None
+
+    def activity_stats(self, user_id: int, days: int = 7) -> dict[str, int]:
+        from datetime import timedelta
+        since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        with closing(self.connect()) as db:
+            rows = db.execute(
+                """SELECT action, COUNT(*) AS cnt
+                   FROM user_activity
+                   WHERE user_id = ? AND created_at >= ?
+                   GROUP BY action""",
+                (user_id, since),
+            ).fetchall()
+        return {row["action"]: row["cnt"] for row in rows}
+
+    def activity_total(self, user_id: int, days: int = 7) -> int:
+        from datetime import timedelta
+        since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        with closing(self.connect()) as db:
+            row = db.execute(
+                "SELECT COUNT(*) AS c FROM user_activity WHERE user_id = ? AND created_at >= ?",
+                (user_id, since),
+            ).fetchone()
+        return row["c"] if row else 0
+
+    def cleanup_old_activity(self, keep_days: int = 28) -> int:
+        """Удаляет записи активности старше keep_days. Возвращает число удалённых."""
+        from datetime import timedelta
+        cutoff = (datetime.now() - timedelta(days=keep_days)).isoformat(timespec="seconds")
+        with closing(self.connect()) as db, db:
+            cur = db.execute("DELETE FROM user_activity WHERE created_at < ?", (cutoff,))
+            return cur.rowcount
+
+    def list_activity_all_users(self, days: int = 7) -> list[sqlite3.Row]:
+        from datetime import timedelta
+        since = (datetime.now() - timedelta(days=days)).isoformat(timespec="seconds")
+        with closing(self.connect()) as db:
+            return db.execute("""
+                SELECT u.user_id, u.full_name,
+                       (SELECT MAX(a.created_at) FROM user_activity a
+                        WHERE a.user_id = u.user_id) AS last_seen,
+                       (SELECT COUNT(*) FROM user_activity a
+                        WHERE a.user_id = u.user_id AND a.created_at >= ?) AS cnt
+                FROM users u
+                ORDER BY last_seen DESC
+            """, (since,)).fetchall()
 
         # ----- настройки пользователя -----
 

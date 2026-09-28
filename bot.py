@@ -13,11 +13,12 @@ from aiogram import Bot, Dispatcher
 from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-import env  # noqa: F401 — загружает .env при импорте
+import env  
 from config import DB_FILE, QUOTES_FILE
 from database import Database
 from handlers import get_main_router
 from utils import load_quotes, format_quote
+from middlewares.activity import ActivityMiddleware
 
 
 # ---------- Фоновые задачи ----------
@@ -69,6 +70,16 @@ async def cleanup_acts_loop() -> None:
             logging.exception("Ошибка при очистке актов")
         await asyncio.sleep(3600)
 
+async def cleanup_activity_loop(database: Database) -> None:
+    """Раз в сутки удаляет активность старше 4 недель (28 дней)."""
+    while True:
+        try:
+            deleted = database.cleanup_old_activity(keep_days=28)
+            if deleted:
+                logging.info("Очистка активности: удалено %s записей", deleted)
+        except Exception:
+            logging.exception("Ошибка в cleanup_activity_loop")
+        await asyncio.sleep(86400)  # раз в сутки
 
 async def quotes_loop(bot: Bot, database: Database) -> None:
     """Раз в день в 12:00 МСК отправляет случайную цитату подписчикам."""
@@ -116,30 +127,25 @@ async def quotes_loop(bot: Bot, database: Database) -> None:
 async def main() -> None:
     token = os.getenv("BOT_TOKEN")
     if not token or token.startswith("вставьте"):
-        raise RuntimeError(
-            "Создайте файл .env по образцу .env.example и вставьте токен BotFather."
-        )
-
+        raise RuntimeError("Создайте файл .env по образцу .env.example и вставьте токен BotFather.")
     proxy_url = os.getenv("PROXY_URL") or None
-
     database = Database(DB_FILE)
     database.initialize()
-
     if proxy_url:
         logging.info("Использую прокси: %s", proxy_url)
         bot = Bot(token, session=AiohttpSession(proxy=proxy_url))
     else:
         logging.info("Прокси не задан — подключаюсь напрямую")
         bot = Bot(token)
-
     dp = Dispatcher()
     dp["database"] = database
+    dp.update.middleware(ActivityMiddleware())
     dp.include_router(get_main_router())
 
     asyncio.create_task(reminder_loop(bot, database))
     asyncio.create_task(cleanup_acts_loop())
+    asyncio.create_task(cleanup_activity_loop(database))
     asyncio.create_task(quotes_loop(bot, database))
-
 
     await dp.start_polling(bot, drop_pending_updates=True)
 
